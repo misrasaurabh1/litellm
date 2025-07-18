@@ -128,7 +128,8 @@ class LiteLLMAnthropicMessagesAdapter:
         """
         Which anthropic params, we need to translate to the openai format.
         """
-        return ["messages", "metadata", "system", "tool_choice", "tools"]
+        # Use module constant, faster than building a list per call
+        return _TRANS_PARAMS
 
     def translate_anthropic_messages_to_openai(  # noqa: PLR0915
         self,
@@ -140,144 +141,144 @@ class LiteLLMAnthropicMessagesAdapter:
         ],
     ) -> List:
         new_messages: List[AllMessageValues] = []
-        for m in messages:
-            user_message: Optional[ChatCompletionUserMessage] = None
-            tool_message_list: List[ChatCompletionToolMessage] = []
-            new_user_content_list: List[
-                Union[ChatCompletionTextObject, ChatCompletionImageObject]
-            ] = []
-            ## USER MESSAGE ##
-            if m["role"] == "user":
-                ## translate user message
-                message_content = m.get("content")
-                if message_content and isinstance(message_content, str):
-                    user_message = ChatCompletionUserMessage(
-                        role="user", content=message_content
-                    )
-                elif message_content and isinstance(message_content, list):
-                    for content in message_content:
-                        if content.get("type") == "text":
-                            text_obj = ChatCompletionTextObject(
-                                type="text", text=content.get("text", "")
-                            )
-                            new_user_content_list.append(text_obj)
-                        elif content.get("type") == "image":
-                            image_url = ChatCompletionImageUrlObject(
-                                url=f"data:{content.get('type', '')};base64,{content.get('source', '')}"
-                            )
-                            image_obj = ChatCompletionImageObject(
-                                type="image_url", image_url=image_url
-                            )
+        append = new_messages.append
+        extend = new_messages.extend
 
-                            new_user_content_list.append(image_obj)
-                        elif content.get("type") == "tool_result":
-                            if "content" not in content:
-                                tool_result = ChatCompletionToolMessage(
-                                    role="tool",
-                                    tool_call_id=content.get("tool_use_id", ""),
-                                    content="",
-                                )
-                                tool_message_list.append(tool_result)
-                            elif isinstance(content.get("content"), str):
-                                tool_result = ChatCompletionToolMessage(
-                                    role="tool",
-                                    tool_call_id=content.get("tool_use_id", ""),
-                                    content=str(content.get("content", "")),
-                                )
-                                tool_message_list.append(tool_result)
-                            elif isinstance(content.get("content"), list):
-                                for c in content.get("content", []):
-                                    if isinstance(c, str):
-                                        tool_result = ChatCompletionToolMessage(
-                                            role="tool",
-                                            tool_call_id=content.get("tool_use_id", ""),
-                                            content=c,
-                                        )
-                                        tool_message_list.append(tool_result)
-                                    elif isinstance(c, dict):
-                                        if c.get("type") == "text":
-                                            tool_result = ChatCompletionToolMessage(
-                                                role="tool",
-                                                tool_call_id=content.get(
-                                                    "tool_use_id", ""
-                                                ),
+        for m in messages:
+            role = m["role"]
+            if role == _MSG_ROLE_USER:
+                message_content = m.get("content")
+                # Fast path: ordinary user message string
+                if isinstance(message_content, str):
+                    append(ChatCompletionUserMessage(role=_MSG_ROLE_USER, content=message_content))
+                    continue
+
+                # If content is a list
+                if not message_content:
+                    continue
+
+                user_content_list = []
+                tool_message_list = []
+                for content in message_content:
+                    ctype = content.get("type")
+                    # --- user content ---
+                    if ctype == _TYPE_TEXT:
+                        user_content_list.append(
+                            ChatCompletionTextObject(type=_TYPE_TEXT, text=content.get("text", ""))
+                        )
+                    elif ctype == _TYPE_IMAGE:
+                        source = content.get("source", "")
+                        user_content_list.append(
+                            ChatCompletionImageObject(
+                                type=_TYPE_IMAGE_URL,
+                                image_url=ChatCompletionImageUrlObject(
+                                    url=f"data:{ctype};base64,{source}"
+                                ),
+                            )
+                        )
+                    # --- tool result as tool message(s) ---
+                    elif ctype == _TYPE_TOOL_RESULT:
+                        tool_use_id = content.get("tool_use_id", "")
+                        c_inner = content.get("content", None)
+                        # No content: make empty tool message
+                        if "content" not in content:
+                            tool_message_list.append(
+                                ChatCompletionToolMessage(role=_MSG_ROLE_TOOL, tool_call_id=tool_use_id, content="")
+                            )
+                        elif isinstance(c_inner, str):
+                            tool_message_list.append(
+                                ChatCompletionToolMessage(role=_MSG_ROLE_TOOL, tool_call_id=tool_use_id, content=c_inner)
+                            )
+                        elif isinstance(c_inner, list):
+                            for c in c_inner:
+                                if isinstance(c, str):
+                                    tool_message_list.append(
+                                        ChatCompletionToolMessage(role=_MSG_ROLE_TOOL, tool_call_id=tool_use_id, content=c)
+                                    )
+                                elif isinstance(c, dict):
+                                    ctype2 = c.get("type")
+                                    if ctype2 == _TYPE_TEXT:
+                                        tool_message_list.append(
+                                            ChatCompletionToolMessage(
+                                                role=_MSG_ROLE_TOOL,
+                                                tool_call_id=tool_use_id,
                                                 content=c.get("text", ""),
                                             )
-                                            tool_message_list.append(tool_result)
-                                        elif c.get("type") == "image":
-                                            image_str = f"data:{c.get('type', '')};base64,{c.get('source', '')}"
-                                            tool_result = ChatCompletionToolMessage(
-                                                role="tool",
-                                                tool_call_id=content.get(
-                                                    "tool_use_id", ""
-                                                ),
+                                        )
+                                    elif ctype2 == _TYPE_IMAGE:
+                                        source2 = c.get("source", "")
+                                        image_str = f"data:{ctype2};base64,{source2}"
+                                        tool_message_list.append(
+                                            ChatCompletionToolMessage(
+                                                role=_MSG_ROLE_TOOL,
+                                                tool_call_id=tool_use_id,
                                                 content=image_str,
                                             )
-                                            tool_message_list.append(tool_result)
+                                        )
+                # Only append as necessary for user/tool message batching
+                if tool_message_list:
+                    extend(tool_message_list)
+                if user_content_list:
+                    append({"role": _MSG_ROLE_USER, "content": user_content_list})
 
-            if len(tool_message_list) > 0:
-                new_messages.extend(tool_message_list)
-
-            if user_message is not None:
-                new_messages.append(user_message)
-
-            if len(new_user_content_list) > 0:
-                new_messages.append({"role": "user", "content": new_user_content_list})  # type: ignore
-
-            ## ASSISTANT MESSAGE ##
-            assistant_message_str: Optional[str] = None
-            tool_calls: List[ChatCompletionAssistantToolCall] = []
-            if m["role"] == "assistant":
-                if isinstance(m.get("content"), str):
-                    assistant_message_str = str(m.get("content", ""))
-                elif isinstance(m.get("content"), list):
-                    for content in m.get("content", []):
+            elif role == _MSG_ROLE_ASSISTANT:
+                m_content = m.get("content")
+                # Fast path: string
+                if isinstance(m_content, str):
+                    assistant_message = ChatCompletionAssistantMessage(
+                        role=_MSG_ROLE_ASSISTANT,
+                        content=m_content,
+                    )
+                    append(assistant_message)
+                # List of content objects
+                elif m_content and isinstance(m_content, list):
+                    assistant_message_strs = []
+                    tool_calls = []
+                    for content in m_content:
                         if isinstance(content, str):
-                            assistant_message_str = str(content)
+                            assistant_message_strs.append(content)
                         elif isinstance(content, dict):
-                            if content.get("type") == "text":
-                                if assistant_message_str is None:
-                                    assistant_message_str = content.get("text", "")
-                                else:
-                                    assistant_message_str += content.get("text", "")
-                            elif content.get("type") == "tool_use":
+                            ctype = content.get("type")
+                            if ctype == _TYPE_TEXT:
+                                txt = content.get("text", "")
+                                assistant_message_strs.append(txt)
+                            elif ctype == _TYPE_TOOL_USE:
                                 function_chunk = ChatCompletionToolCallFunctionChunk(
                                     name=content.get("name", ""),
                                     arguments=json.dumps(content.get("input", {})),
                                 )
-
                                 tool_calls.append(
                                     ChatCompletionAssistantToolCall(
                                         id=content.get("id", ""),
-                                        type="function",
+                                        type=_TYPE_FUNCTION,
                                         function=function_chunk,
                                     )
                                 )
-
-            if assistant_message_str is not None or len(tool_calls) > 0:
-                assistant_message = ChatCompletionAssistantMessage(
-                    role="assistant",
-                    content=assistant_message_str,
-                )
-                if len(tool_calls) > 0:
-                    assistant_message["tool_calls"] = tool_calls
-                new_messages.append(assistant_message)
-
+                    assistant_message_str = "".join(assistant_message_strs) if assistant_message_strs else None
+                    if assistant_message_str is not None or tool_calls:
+                        assistant_message = ChatCompletionAssistantMessage(
+                            role=_MSG_ROLE_ASSISTANT,
+                            content=assistant_message_str,
+                        )
+                        if tool_calls:
+                            assistant_message["tool_calls"] = tool_calls
+                        append(assistant_message)
         return new_messages
 
     def translate_anthropic_tool_choice_to_openai(
         self, tool_choice: AnthropicMessagesToolChoice
     ) -> ChatCompletionToolChoiceValues:
-        if tool_choice["type"] == "any":
+        ttype = tool_choice["type"]
+        if ttype == "any":
             return "required"
-        elif tool_choice["type"] == "auto":
+        elif ttype == "auto":
             return "auto"
-        elif tool_choice["type"] == "tool":
+        elif ttype == "tool":
             tc_function_param = ChatCompletionToolChoiceFunctionParam(
                 name=tool_choice.get("name", "")
             )
             return ChatCompletionToolChoiceObjectParam(
-                type="function", function=tc_function_param
+                type=_TYPE_FUNCTION, function=tc_function_param
             )
         else:
             raise ValueError(
@@ -288,23 +289,23 @@ class LiteLLMAnthropicMessagesAdapter:
         self, tools: List[AllAnthropicToolsValues]
     ) -> List[ChatCompletionToolParam]:
         new_tools: List[ChatCompletionToolParam] = []
-        mapped_tool_params = ["name", "input_schema", "description"]
         for tool in tools:
             function_chunk = ChatCompletionToolParamFunctionChunk(
                 name=tool["name"],
             )
-            if "input_schema" in tool:
-                function_chunk["parameters"] = tool["input_schema"]  # type: ignore
-            if "description" in tool:
-                function_chunk["description"] = tool["description"]  # type: ignore
-
+            ic_schema = tool.get("input_schema", None)
+            if ic_schema is not None:
+                function_chunk["parameters"] = ic_schema  # type: ignore
+            descr = tool.get("description", None)
+            if descr is not None:
+                function_chunk["description"] = descr  # type: ignore
+            # Only update with unmapped keys
             for k, v in tool.items():
-                if k not in mapped_tool_params:  # pass additional computer kwargs
+                if k not in _TOOLS_MAPPED_PARAMS:
                     function_chunk.setdefault("parameters", {}).update({k: v})
             new_tools.append(
-                ChatCompletionToolParam(type="function", function=function_chunk)
+                ChatCompletionToolParam(type=_TYPE_FUNCTION, function=function_chunk)
             )
-
         return new_tools
 
     def translate_anthropic_to_openai(
@@ -313,14 +314,8 @@ class LiteLLMAnthropicMessagesAdapter:
         """
         This is used by the beta Anthropic Adapter, for translating anthropic `/v1/messages` requests to the openai format.
         """
-        new_messages: List[AllMessageValues] = []
-
         ## CONVERT ANTHROPIC MESSAGES TO OPENAI
-        messages_list: List[
-            Union[
-                AnthropicMessagesUserMessageParam, AnthopicMessagesAssistantMessageParam
-            ]
-        ] = cast(
+        messages_list = cast(
             List[
                 Union[
                     AnthropicMessagesUserMessageParam,
@@ -332,47 +327,43 @@ class LiteLLMAnthropicMessagesAdapter:
         new_messages = self.translate_anthropic_messages_to_openai(
             messages=messages_list
         )
-        ## ADD SYSTEM MESSAGE TO MESSAGES
-        if "system" in anthropic_message_request:
-            system_content = anthropic_message_request["system"]
-            if system_content:
-                new_messages.insert(
-                    0,
-                    ChatCompletionSystemMessage(role="system", content=system_content),
-                )
+        # Insert system message at the start (fast-path, only if necessary)
+        system_content = anthropic_message_request.get("system", None)
+        if system_content:
+            new_messages.insert(
+                0,
+                ChatCompletionSystemMessage(role="system", content=system_content),
+            )
 
         new_kwargs: ChatCompletionRequest = {
             "model": anthropic_message_request["model"],
             "messages": new_messages,
         }
-        ## CONVERT METADATA (user_id)
-        if "metadata" in anthropic_message_request:
-            metadata = anthropic_message_request["metadata"]
-            if metadata and "user_id" in metadata:
-                new_kwargs["user"] = metadata["user_id"]
+        # Convert user_id from metadata
+        metadata = anthropic_message_request.get("metadata", None)
+        if metadata and "user_id" in metadata:
+            new_kwargs["user"] = metadata["user_id"]
 
         # Pass litellm proxy specific metadata
         if "litellm_metadata" in anthropic_message_request:
-            # metadata will be passed to litellm.acompletion(), it's a litellm_param
             new_kwargs["metadata"] = anthropic_message_request.pop("litellm_metadata")
 
-        ## CONVERT TOOL CHOICE
-        if "tool_choice" in anthropic_message_request:
-            tool_choice = anthropic_message_request["tool_choice"]
-            if tool_choice:
-                new_kwargs["tool_choice"] = (
-                    self.translate_anthropic_tool_choice_to_openai(
-                        tool_choice=cast(AnthropicMessagesToolChoice, tool_choice)
-                    )
+        # Convert tool choice
+        tool_choice = anthropic_message_request.get("tool_choice", None)
+        if tool_choice:
+            new_kwargs["tool_choice"] = (
+                self.translate_anthropic_tool_choice_to_openai(
+                    tool_choice=cast(AnthropicMessagesToolChoice, tool_choice)
                 )
-        ## CONVERT TOOLS
-        if "tools" in anthropic_message_request:
-            tools = anthropic_message_request["tools"]
-            if tools:
-                new_kwargs["tools"] = self.translate_anthropic_tools_to_openai(
-                    tools=cast(List[AllAnthropicToolsValues], tools)
-                )
+            )
+        # Convert tools
+        tools = anthropic_message_request.get("tools", None)
+        if tools:
+            new_kwargs["tools"] = self.translate_anthropic_tools_to_openai(
+                tools=cast(List[AllAnthropicToolsValues], tools)
+            )
 
+        # Pass remaining non-translated params as is
         translatable_params = self.translatable_anthropic_params()
         for k, v in anthropic_message_request.items():
             if k not in translatable_params:  # pass remaining params as is
@@ -547,3 +538,25 @@ class LiteLLMAnthropicMessagesAdapter:
             index=current_content_block_index,
             delta=content_block_delta,
         )
+
+_TRANS_PARAMS = ["messages", "metadata", "system", "tool_choice", "tools"]
+
+_MSG_ROLE_USER = "user"
+
+_MSG_ROLE_ASSISTANT = "assistant"
+
+_MSG_ROLE_TOOL = "tool"
+
+_TYPE_TEXT = "text"
+
+_TYPE_IMAGE = "image"
+
+_TYPE_TOOL_RESULT = "tool_result"
+
+_TYPE_TOOL_USE = "tool_use"
+
+_TYPE_FUNCTION = "function"
+
+_TYPE_IMAGE_URL = "image_url"
+
+_TOOLS_MAPPED_PARAMS = ("name", "input_schema", "description")
