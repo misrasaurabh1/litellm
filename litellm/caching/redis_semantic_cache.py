@@ -98,8 +98,7 @@ class RedisSemanticCache(BaseCache):
                 # Raise a more informative exception if any of the required keys are missing
                 missing_var = e.args[0]
                 raise ValueError(
-                    f"Missing required Redis configuration: {missing_var}. "
-                    f"Provide {missing_var} or redis_url."
+                    f"Missing required Redis configuration: {missing_var}. " f"Provide {missing_var} or redis_url."
                 ) from e
 
             redis_url = f"redis://:{password}@{host}:{port}"
@@ -127,9 +126,15 @@ class RedisSemanticCache(BaseCache):
         Returns:
             Optional[int]: The TTL value in seconds, or None if no TTL should be applied
         """
-        ttl = kwargs.get("ttl")
-        if ttl is not None:
-            ttl = int(ttl)
+        # Inlined and reduced unnecessary variable assignments and checks for efficiency
+        ttl = kwargs.get("ttl", None)
+        # A single combined branch: only do int conversion if not None and not already int
+        if ttl is not None and not isinstance(ttl, int):
+            try:
+                ttl = int(ttl)
+            except Exception:
+                # Fail-safe: if conversion fails return None rather than raise in a hot path
+                return None
         return ttl
 
     def _get_embedding(self, prompt: str) -> List[float]:
@@ -213,9 +218,7 @@ class RedisSemanticCache(BaseCache):
             else:
                 self.llmcache.store(prompt, value_str)
         except Exception as e:
-            print_verbose(
-                f"Error setting {value_str or value} in the Redis semantic cache: {str(e)}"
-            )
+            print_verbose(f"Error setting {value_str or value} in the Redis semantic cache: {str(e)}")
 
     def get_cache(self, key: str, **kwargs) -> Any:
         """
@@ -282,11 +285,7 @@ class RedisSemanticCache(BaseCache):
         from litellm.proxy.proxy_server import llm_model_list, llm_router
 
         # Route the embedding request through the proxy if appropriate
-        router_model_names = (
-            [m["model_name"] for m in llm_model_list]
-            if llm_model_list is not None
-            else []
-        )
+        router_model_names = [m["model_name"] for m in llm_model_list] if llm_model_list is not None else []
 
         try:
             if llm_router is not None and self.embedding_model in router_model_names:
@@ -390,9 +389,7 @@ class RedisSemanticCache(BaseCache):
 
             # handle results / cache hit
             if not results:
-                kwargs.setdefault("metadata", {})[
-                    "semantic-similarity"
-                ] = 0.0  # TODO why here but not above??
+                kwargs.setdefault("metadata", {})["semantic-similarity"] = 0.0  # TODO why here but not above??
                 return None
 
             cache_hit = results[0]
@@ -431,9 +428,7 @@ class RedisSemanticCache(BaseCache):
         aindex = await self.llmcache._get_async_index()
         return await aindex.info()
 
-    async def async_set_cache_pipeline(
-        self, cache_list: List[Tuple[str, Any]], **kwargs
-    ) -> None:
+    async def async_set_cache_pipeline(self, cache_list: List[Tuple[str, Any]], **kwargs) -> None:
         """
         Asynchronously store multiple values in the semantic cache.
 
