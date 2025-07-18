@@ -268,21 +268,23 @@ class LiteLLMAnthropicMessagesAdapter:
     def translate_anthropic_tool_choice_to_openai(
         self, tool_choice: AnthropicMessagesToolChoice
     ) -> ChatCompletionToolChoiceValues:
-        if tool_choice["type"] == "any":
+        ttype = tool_choice["type"]
+        if ttype == "any":
             return "required"
-        elif tool_choice["type"] == "auto":
+        if ttype == "auto":
             return "auto"
-        elif tool_choice["type"] == "tool":
+        if ttype == "tool":
+            # Only build tool-related objects if necessary
             tc_function_param = ChatCompletionToolChoiceFunctionParam(
                 name=tool_choice.get("name", "")
             )
             return ChatCompletionToolChoiceObjectParam(
                 type="function", function=tc_function_param
             )
-        else:
-            raise ValueError(
-                "Incompatible tool choice param submitted - {}".format(tool_choice)
-            )
+        # Only build error string when necessary
+        raise ValueError(
+            f"Incompatible tool choice param submitted - {tool_choice}"
+        )
 
     def translate_anthropic_tools_to_openai(
         self, tools: List[AllAnthropicToolsValues]
