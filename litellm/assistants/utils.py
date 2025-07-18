@@ -43,11 +43,7 @@ def get_optional_params_add_message(
         "metadata": None,
     }
 
-    non_default_params = {
-        k: v
-        for k, v in passed_params.items()
-        if (k in default_params and v != default_params[k])
-    }
+    non_default_params = {k: v for k, v in passed_params.items() if (k in default_params and v != default_params[k])}
     optional_params = {}
 
     ## raise exception if non-default value passed for non-openai/azure embedding calls
@@ -55,9 +51,7 @@ def get_optional_params_add_message(
         if len(non_default_params.keys()) > 0:
             keys = list(non_default_params.keys())
             for k in keys:
-                if (
-                    litellm.drop_params is True and k not in supported_params
-                ):  # drop the unsupported non-default values
+                if litellm.drop_params is True and k not in supported_params:  # drop the unsupported non-default values
                     non_default_params.pop(k, None)
                 elif k not in supported_params:
                     raise litellm.utils.UnsupportedParamsError(
@@ -71,9 +65,7 @@ def get_optional_params_add_message(
     if custom_llm_provider == "openai":
         optional_params = non_default_params
     elif custom_llm_provider == "azure":
-        supported_params = (
-            litellm.AzureOpenAIAssistantsAPIConfig().get_supported_openai_create_message_params()
-        )
+        supported_params = litellm.AzureOpenAIAssistantsAPIConfig().get_supported_openai_create_message_params()
         _check_valid_arg(supported_params=supported_params)
         optional_params = litellm.AzureOpenAIAssistantsAPIConfig().map_openai_params_create_message_params(
             non_default_params=non_default_params, optional_params=optional_params
@@ -94,13 +86,6 @@ def get_optional_params_image_gen(
     custom_llm_provider: Optional[str] = None,
     **kwargs,
 ):
-    # retrieve all parameters passed to the function
-    passed_params = locals()
-    custom_llm_provider = passed_params.pop("custom_llm_provider")
-    special_params = passed_params.pop("kwargs")
-    for k, v in special_params.items():
-        passed_params[k] = v
-
     default_params = {
         "n": None,
         "quality": None,
@@ -109,45 +94,57 @@ def get_optional_params_image_gen(
         "style": None,
         "user": None,
     }
+    # Collect non-default values, directly using the variables, avoids locals()
+    non_default_params = {}
+    if n is not None:
+        non_default_params["n"] = n
+    if quality is not None:
+        non_default_params["quality"] = quality
+    if response_format is not None:
+        non_default_params["response_format"] = response_format
+    if size is not None:
+        non_default_params["size"] = size
+    if style is not None:
+        non_default_params["style"] = style
+    if user is not None:
+        non_default_params["user"] = user
 
-    non_default_params = {
-        k: v
-        for k, v in passed_params.items()
-        if (k in default_params and v != default_params[k])
-    }
+    # Add in any extra kwargs directly, as intended by the original
+    passed_params = dict(non_default_params)
+    if kwargs:
+        passed_params.update(kwargs)
+
     optional_params = {}
 
-    ## raise exception if non-default value passed for non-openai/azure embedding calls
+    # raise exception if non-default value passed for non-openai/azure embedding calls
     def _check_valid_arg(supported_params):
-        if len(non_default_params.keys()) > 0:
-            keys = list(non_default_params.keys())
-            for k in keys:
-                if (
-                    litellm.drop_params is True and k not in supported_params
-                ):  # drop the unsupported non-default values
-                    non_default_params.pop(k, None)
-                elif k not in supported_params:
-                    raise UnsupportedParamsError(
-                        status_code=500,
-                        message=f"Setting user/encoding format is not supported by {custom_llm_provider}. To drop it from the call, set `litellm.drop_params = True`.",
-                    )
-            return non_default_params
+        # Direct set lookup for faster check, do not build list
+        for k in list(non_default_params):
+            if litellm.drop_params is True and k not in supported_params:
+                non_default_params.pop(k, None)
+            elif k not in supported_params:
+                raise UnsupportedParamsError(
+                    status_code=500,
+                    message=f"Setting user/encoding format is not supported by {custom_llm_provider}. To drop it from the call, set `litellm.drop_params = True`.",
+                )
+        return non_default_params
 
     if (
         custom_llm_provider == "openai"
         or custom_llm_provider == "azure"
         or custom_llm_provider in litellm.openai_compatible_providers
     ):
-        optional_params = non_default_params
+        # just pass them as-is
+        optional_params = dict(non_default_params)
     elif custom_llm_provider == "bedrock":
-        supported_params = ["size"]
+        supported_params = {"size"}
         _check_valid_arg(supported_params=supported_params)
         if size is not None:
             width, height = size.split("x")
             optional_params["width"] = int(width)
             optional_params["height"] = int(height)
     elif custom_llm_provider == "vertex_ai":
-        supported_params = ["n"]
+        supported_params = {"n"}
         """
         All params here: https://console.cloud.google.com/vertex-ai/publishers/google/model-garden/imagegeneration?project=adroit-crow-413218
         """
@@ -155,7 +152,9 @@ def get_optional_params_image_gen(
         if n is not None:
             optional_params["sampleCount"] = int(n)
 
-    for k in passed_params.keys():
-        if k not in default_params.keys():
-            optional_params[k] = passed_params[k]
+    # Add back in any remaining kwargs (ones not in defaults)
+    for k, v in kwargs.items():
+        if k not in default_params:
+            optional_params[k] = v
+
     return optional_params
