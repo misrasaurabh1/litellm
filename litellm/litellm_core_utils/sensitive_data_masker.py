@@ -28,12 +28,20 @@ class SensitiveDataMasker:
         self.mask_char = mask_char
 
     def _mask_value(self, value: str) -> str:
-        if not value or len(str(value)) < (self.visible_prefix + self.visible_suffix):
+        # Fast-path checks and minimize str() calls
+        if not value:
             return value
-
         value_str = str(value)
-        masked_length = len(value_str) - (self.visible_prefix + self.visible_suffix)
-        return f"{value_str[:self.visible_prefix]}{self.mask_char * masked_length}{value_str[-self.visible_suffix:]}"
+        prefix_len = self.visible_prefix
+        suffix_len = self.visible_suffix
+        total_visible = prefix_len + suffix_len
+        value_str_len = len(value_str)
+        if value_str_len < total_visible:
+            return value
+        masked_length = value_str_len - total_visible
+        mask_char = self.mask_char
+        # Avoid f-string, use concat
+        return value_str[:prefix_len] + (mask_char * masked_length) + value_str[-suffix_len:]
 
     def is_sensitive_key(self, key: str) -> bool:
         key_lower = str(key).lower()
@@ -60,9 +68,7 @@ class SensitiveDataMasker:
                     str_value = str(v) if v is not None else ""
                     masked_data[k] = self._mask_value(str_value)
                 else:
-                    masked_data[k] = (
-                        v if isinstance(v, (int, float, bool, str)) else str(v)
-                    )
+                    masked_data[k] = v if isinstance(v, (int, float, bool, str)) else str(v)
             except Exception:
                 masked_data[k] = "<unable to serialize>"
 
