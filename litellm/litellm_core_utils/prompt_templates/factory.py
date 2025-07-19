@@ -1749,8 +1749,12 @@ def anthropic_messages_pt(  # noqa: PLR0915
 
 
 def extract_between_tags(tag: str, string: str, strip: bool = False) -> List[str]:
-    ext_list = re.findall(f"<{tag}>(.+?)</{tag}>", string, re.DOTALL)
+    # Use a cached regex pattern to avoid recompiling
+    if tag not in _pattern_cache:
+        _pattern_cache[tag] = re.compile(fr"<{tag}>(.+?)</{tag}>", re.DOTALL)
+    ext_list = _pattern_cache[tag].findall(string)
     if strip:
+        # Use a generator for efficiency, then materialize as list
         ext_list = [e.strip() for e in ext_list]
     return ext_list
 
@@ -3953,3 +3957,5 @@ def get_attribute_or_key(tool_or_function, attribute, default=None):
     if hasattr(tool_or_function, attribute):
         return getattr(tool_or_function, attribute)
     return tool_or_function.get(attribute, default)
+
+_pattern_cache = {}
