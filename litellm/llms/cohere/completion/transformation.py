@@ -1,5 +1,5 @@
 import time
-from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, List, Optional, Union
+from typing import Dict, TYPE_CHECKING, Any, AsyncIterator, Iterator, List, Optional, Union
 
 import httpx
 
@@ -77,19 +77,28 @@ class CohereTextConfig(BaseConfig):
         truncate: Optional[str] = None,
         temperature: Optional[int] = None,
         preset: Optional[str] = None,
-        end_sequences: Optional[list] = None,
-        stop_sequences: Optional[list] = None,
+        end_sequences: Optional[List[str]] = None,
+        stop_sequences: Optional[List[str]] = None,
         k: Optional[int] = None,
         p: Optional[int] = None,
         frequency_penalty: Optional[int] = None,
         presence_penalty: Optional[int] = None,
         return_likelihoods: Optional[str] = None,
-        logit_bias: Optional[dict] = None,
+        logit_bias: Optional[Dict[str, Any]] = None,
     ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
+        self.num_generations = num_generations
+        self.max_tokens = max_tokens
+        self.truncate = truncate
+        self.temperature = temperature
+        self.preset = preset
+        self.end_sequences = end_sequences
+        self.stop_sequences = stop_sequences
+        self.k = k
+        self.p = p
+        self.frequency_penalty = frequency_penalty
+        self.presence_penalty = presence_penalty
+        self.return_likelihoods = return_likelihoods
+        self.logit_bias = logit_bias
 
     @classmethod
     def get_config(cls):
@@ -168,9 +177,7 @@ class CohereTextConfig(BaseConfig):
         litellm_params: dict,
         headers: dict,
     ) -> dict:
-        prompt = " ".join(
-            convert_content_list_to_str(message=message) for message in messages
-        )
+        prompt = " ".join(convert_content_list_to_str(message=message) for message in messages)
 
         ## Load Config
         config = litellm.CohereConfig.get_config()
@@ -183,9 +190,7 @@ class CohereTextConfig(BaseConfig):
         ## Handle Tool Calling
         if "tools" in optional_params:
             _is_function_call = True
-            tool_calling_system_prompt = self._construct_cohere_tool_for_completion_api(
-                tools=optional_params["tools"]
-            )
+            tool_calling_system_prompt = self._construct_cohere_tool_for_completion_api(tools=optional_params["tools"])
             optional_params["tools"] = tool_calling_system_prompt
 
         data = {
@@ -210,9 +215,7 @@ class CohereTextConfig(BaseConfig):
         api_key: Optional[str] = None,
         json_mode: Optional[bool] = None,
     ) -> ModelResponse:
-        prompt = " ".join(
-            convert_content_list_to_str(message=message) for message in messages
-        )
+        prompt = " ".join(convert_content_list_to_str(message=message) for message in messages)
         completion_response = raw_response.json()
         choices_list = []
         for idx, item in enumerate(completion_response["generations"]):
@@ -230,9 +233,7 @@ class CohereTextConfig(BaseConfig):
 
         ## CALCULATING USAGE
         prompt_tokens = len(encoding.encode(prompt))
-        completion_tokens = len(
-            encoding.encode(model_response["choices"][0]["message"].get("content", ""))
-        )
+        completion_tokens = len(encoding.encode(model_response["choices"][0]["message"].get("content", "")))
 
         model_response.created = int(time.time())
         model_response.model = model
