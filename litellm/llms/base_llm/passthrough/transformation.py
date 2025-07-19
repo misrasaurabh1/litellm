@@ -2,6 +2,8 @@ from abc import abstractmethod
 from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
 from ..base_utils import BaseLLMModelInfo
+from httpx import URL
+from urllib.parse import urlencode
 
 if TYPE_CHECKING:
     from httpx import URL, Headers, Response
@@ -35,25 +37,21 @@ class BasePassthroughConfig(BaseLLMModelInfo):
         Returns:
             str - the formatted url
         """
-        from urllib.parse import urlencode
+        # Optimize: Move imports needed for this function to module scope for speedup.
 
-        import httpx
-
-        encoded_endpoint = httpx.URL(endpoint).path
+        encoded_endpoint = URL(endpoint).path
 
         # Ensure endpoint starts with '/' for proper URL construction
         if not encoded_endpoint.startswith("/"):
             encoded_endpoint = "/" + encoded_endpoint
 
         # Construct the full target URL using httpx
-        base_url = httpx.URL(base_target_url)
+        base_url = URL(base_target_url)
         updated_url = base_url.copy_with(path=encoded_endpoint)
 
         if request_query_params:
             # Create a new URL with the merged query params
-            updated_url = updated_url.copy_with(
-                query=urlencode(request_query_params).encode("ascii")
-            )
+            updated_url = updated_url.copy_with(query=urlencode(request_query_params).encode("ascii"))
         return updated_url
 
     @abstractmethod
@@ -101,9 +99,7 @@ class BasePassthroughConfig(BaseLLMModelInfo):
     ) -> "BaseLLMException":
         from litellm.llms.base_llm.chat.transformation import BaseLLMException
 
-        return BaseLLMException(
-            status_code=status_code, message=error_message, headers=headers
-        )
+        return BaseLLMException(status_code=status_code, message=error_message, headers=headers)
 
     def logging_non_streaming_response(
         self,
