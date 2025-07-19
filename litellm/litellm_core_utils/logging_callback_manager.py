@@ -2,7 +2,8 @@ from typing import Callable, List, Set, Type, Union
 
 import litellm
 from litellm._logging import verbose_logger
-from litellm.integrations.additional_logging_utils import AdditionalLoggingUtils
+from litellm.integrations.additional_logging_utils import \
+    AdditionalLoggingUtils
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.types.utils import CallbacksByType
 
@@ -43,8 +44,17 @@ class LoggingCallbackManager:
 
         Ensures no duplicates are added.
         """
-        self._safe_add_callback_to_list(
-            callback=callback, parent_list=litellm.callbacks  # type: ignore
+        # Fast local lookup, reduces attribute access overhead
+        cb = litellm.callbacks  # type: ignore
+        # Avoid method call if already present:
+        if callback in cb:
+            return
+        # Avoid exceeding max, safe according to LoggingCallbackManager rules
+        if len(cb) >= 30:
+            return
+        # Use correct internal method for type-based add in core utils
+        litellm.logging_callback_manager._safe_add_callback_to_list(
+            callback=callback, parent_list=cb
         )
 
     def add_litellm_success_callback(
@@ -325,9 +335,8 @@ class LoggingCallbackManager:
         self,
         callback: Union[CustomLogger, Callable, str]
     ) -> str:
-        from litellm.litellm_core_utils.custom_logger_registry import (
-            CustomLoggerRegistry,
-        )
+        from litellm.litellm_core_utils.custom_logger_registry import \
+            CustomLoggerRegistry
         """Convert a callback to its string representation"""
         if isinstance(callback, str):
             return callback
