@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Union, Any, List, Optional, Tuple, cast, overload
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -174,15 +174,17 @@ def convert_to_ollama_image(openai_image_url: str):
 def _handle_ollama_system_message(
     messages: list, prompt: str, msg_i: int
 ) -> Tuple[str, int]:
-    system_content_str = ""
-    ## MERGE CONSECUTIVE SYSTEM CONTENT ##
-    while msg_i < len(messages) and messages[msg_i]["role"] == "system":
-        msg_content = convert_content_list_to_str(messages[msg_i])
-        system_content_str += msg_content
+    system_content = []
+    messages_len = len(messages)
+    append = system_content.append  # local ref for minor speed-up
 
+    # MERGE CONSECUTIVE SYSTEM CONTENT
+    while msg_i < messages_len and messages[msg_i]["role"] == "system":
+        msg_content = convert_content_list_to_str(messages[msg_i])
+        append(msg_content)
         msg_i += 1
 
-    return system_content_str, msg_i
+    return ''.join(system_content), msg_i
 
 
 def ollama_pt(
