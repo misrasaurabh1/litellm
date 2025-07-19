@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import httpx
 
 from litellm.types.llms.openai import AllMessageValues, ChatCompletionRequest
+from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
@@ -66,9 +67,7 @@ class HuggingFaceChatConfig(OpenAIGPTConfig):
     def get_error_class(
         self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
     ) -> BaseLLMException:
-        return HuggingFaceError(
-            status_code=status_code, message=error_message, headers=headers
-        )
+        return HuggingFaceError(status_code=status_code, message=error_message, headers=headers)
 
     def get_base_url(self, model: str, base_url: Optional[str]) -> Optional[str]:
         """
@@ -77,10 +76,14 @@ class HuggingFaceChatConfig(OpenAIGPTConfig):
         Do not add the chat/embedding/rerank extension here. Let the handler do this.
         """
         if model.startswith(("http://", "https://")):
-            base_url = model
-        elif base_url is None:
-            base_url = os.getenv("HF_API_BASE") or os.getenv("HUGGINGFACE_API_BASE", "")
-        return base_url
+            return model  # Return early, avoids unnecessary assignments
+        if base_url is not None:
+            return base_url
+        # Only call getenv if absolutely necessary
+        env_base_url = os.getenv("HF_API_BASE")
+        if env_base_url is not None:
+            return env_base_url
+        return os.getenv("HUGGINGFACE_API_BASE", "")
 
     def get_complete_url(
         self,
@@ -100,9 +103,7 @@ class HuggingFaceChatConfig(OpenAIGPTConfig):
             complete_url = api_base
             complete_url = _build_chat_completion_url(complete_url)
         elif os.getenv("HF_API_BASE") or os.getenv("HUGGINGFACE_API_BASE"):
-            complete_url = str(os.getenv("HF_API_BASE")) or str(
-                os.getenv("HUGGINGFACE_API_BASE")
-            )
+            complete_url = str(os.getenv("HF_API_BASE")) or str(os.getenv("HUGGINGFACE_API_BASE"))
         elif model.startswith(("http://", "https://")):
             complete_url = model
             complete_url = _build_chat_completion_url(complete_url)
@@ -135,9 +136,7 @@ class HuggingFaceChatConfig(OpenAIGPTConfig):
         headers: dict,
     ) -> dict:
         if litellm_params.get("api_base"):
-            return dict(
-                ChatCompletionRequest(model=model, messages=messages, **optional_params)
-            )
+            return dict(ChatCompletionRequest(model=model, messages=messages, **optional_params))
         if "max_retries" in optional_params:
             logger.warning("`max_retries` is not supported. It will be ignored.")
             optional_params.pop("max_retries", None)
@@ -161,8 +160,4 @@ class HuggingFaceChatConfig(OpenAIGPTConfig):
             mapped_model = provider_mapping["providerId"]
 
         messages = self._transform_messages(messages=messages, model=mapped_model)
-        return dict(
-            ChatCompletionRequest(
-                model=mapped_model, messages=messages, **optional_params
-            )
-        )
+        return dict(ChatCompletionRequest(model=mapped_model, messages=messages, **optional_params))
