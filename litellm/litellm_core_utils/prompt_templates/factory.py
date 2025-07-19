@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Union, Any, List, Optional, Tuple, cast, overload
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -14,7 +14,7 @@ import litellm.types.llms
 from litellm import verbose_logger
 from litellm.llms.custom_httpx.http_handler import HTTPHandler, get_async_httpx_client
 from litellm.types.llms.anthropic import *
-from litellm.types.llms.bedrock import MessageBlock as BedrockMessageBlock
+from litellm.types.llms.bedrock import BedrockConverseReasoningContentBlock, BedrockConverseReasoningTextBlock, ContentBlock as BedrockContentBlock, DocumentBlock as BedrockDocumentBlock, ImageBlock as BedrockImageBlock, SourceBlock as BedrockSourceBlock, ToolBlock as BedrockToolBlock, ToolInputSchemaBlock as BedrockToolInputSchemaBlock, ToolJsonSchemaBlock as BedrockToolJsonSchemaBlock, ToolResultBlock as BedrockToolResultBlock, ToolResultContentBlock as BedrockToolResultContentBlock, ToolSpecBlock as BedrockToolSpecBlock, ToolUseBlock as BedrockToolUseBlock, VideoBlock as BedrockVideoBlock, MessageBlock as BedrockMessageBlock
 from litellm.types.llms.custom_http import httpxSpecialProvider
 from litellm.types.llms.ollama import OllamaVisionModelObject
 from litellm.types.llms.openai import (
@@ -37,6 +37,11 @@ from litellm.types.utils import GenericImageParsingChunk
 
 from .common_utils import convert_content_list_to_str, is_non_content_values_set
 from .image_handling import convert_url_to_base64
+import base64
+import httpx
+import mimetypes
+from email.message import Message
+from litellm.types.llms.cohere import CallObject, ChatHistory, ChatHistoryChatBot, ChatHistorySystem, ChatHistoryToolResult, ChatHistoryUser, ToolCallObject, ToolResultObject
 
 
 def default_pt(messages):
@@ -1296,7 +1301,9 @@ def convert_to_anthropic_tool_invoke(
           "type": "function",
           "function": {
             "name": "get_current_weather",
-            "arguments": "{\n\"location\": \"Boston, MA\"\n}"
+            "arguments": "{
+"location": "Boston, MA"
+}"
           }
         }
       ]
@@ -1322,36 +1329,35 @@ def convert_to_anthropic_tool_invoke(
     }
     """
     anthropic_tool_invoke = []
+    append = anthropic_tool_invoke.append  # localize for faster loop
 
     for tool in tool_calls:
-        if not get_attribute_or_key(tool, "type") == "function":
+        # Direct lookup without function call for speed
+        tool_type = tool.type if hasattr(tool, "type") else tool.get("type")
+        if tool_type != "function":
             continue
+
+        function = tool.function if hasattr(tool, "function") else tool.get("function")
+
+        # Avoid get_attribute_or_key repeated calls
+        tool_id = tool.id if hasattr(tool, "id") else tool.get("id")
+        name = function.name if hasattr(function, "name") else function.get("name")
+        arguments = function.arguments if hasattr(function, "arguments") else function.get("arguments")
+        parsed_input = json.loads(arguments)
 
         _anthropic_tool_use_param = AnthropicMessagesToolUseParam(
             type="tool_use",
-            id=cast(str, get_attribute_or_key(tool, "id")),
-            name=cast(
-                str,
-                get_attribute_or_key(get_attribute_or_key(tool, "function"), "name"),
-            ),
-            input=json.loads(
-                get_attribute_or_key(
-                    get_attribute_or_key(tool, "function"), "arguments"
-                )
-            ),
+            id=tool_id,
+            name=name,
+            input=parsed_input,
         )
 
-        _content_element = add_cache_control_to_content(
-            anthropic_content_element=_anthropic_tool_use_param,
-            orignal_content_element=dict(tool),
-        )
+        # Only call add_cache_control_to_content if likely to be used
+        cache_control = tool.cache_control if hasattr(tool, "cache_control") else tool.get("cache_control", None)
+        if cache_control is not None and isinstance(cache_control, dict):
+            _anthropic_tool_use_param["cache_control"] = ChatCompletionCachedContent(**cache_control)  # type: ignore
 
-        if "cache_control" in _content_element:
-            _anthropic_tool_use_param["cache_control"] = _content_element[
-                "cache_control"
-            ]
-
-        anthropic_tool_invoke.append(_anthropic_tool_use_param)
+        append(_anthropic_tool_use_param)
 
     return anthropic_tool_invoke
 
