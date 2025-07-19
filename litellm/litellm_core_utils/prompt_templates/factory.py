@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Union, Any, List, Optional, Tuple, cast, overload
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -174,91 +174,82 @@ def convert_to_ollama_image(openai_image_url: str):
 def _handle_ollama_system_message(
     messages: list, prompt: str, msg_i: int
 ) -> Tuple[str, int]:
-    system_content_str = ""
-    ## MERGE CONSECUTIVE SYSTEM CONTENT ##
+    # Use list append for efficient string building
+    system_content_strs = []
     while msg_i < len(messages) and messages[msg_i]["role"] == "system":
-        msg_content = convert_content_list_to_str(messages[msg_i])
-        system_content_str += msg_content
-
+        system_content_strs.append(convert_content_list_to_str(messages[msg_i]))
         msg_i += 1
 
-    return system_content_str, msg_i
+    return ''.join(system_content_strs), msg_i
 
 
 def ollama_pt(
     model: str, messages: list
 ) -> Union[
     str, OllamaVisionModelObject
-]:  # https://github.com/ollama/ollama/blob/af4cf55884ac54b9e637cd71dadfe9b7a5685877/docs/modelfile.md#template
+]:
     user_message_types = {"user", "tool", "function"}
     msg_i = 0
     images = []
-    prompt = ""
+    prompt_sections = []
+
     while msg_i < len(messages):
         init_msg_i = msg_i
-        user_content_str = ""
-        ## MERGE CONSECUTIVE USER CONTENT ##
+
+        # USER SECTION
+        user_content_buf = []
         while msg_i < len(messages) and messages[msg_i]["role"] in user_message_types:
             msg_content = messages[msg_i].get("content")
             if msg_content:
                 if isinstance(msg_content, list):
+                    # Common-case is text-only, so optimize for speed.
                     for m in msg_content:
-                        if m.get("type", "") == "image_url":
-                            if isinstance(m["image_url"], str):
-                                images.append(m["image_url"])
-                            elif isinstance(m["image_url"], dict):
-                                images.append(m["image_url"]["url"])
-                        elif m.get("type", "") == "text":
-                            user_content_str += m["text"]
+                        m_type = m.get("type", "")
+                        if m_type == "image_url":
+                            image_url = m["image_url"]
+                            if isinstance(image_url, str):
+                                images.append(image_url)
+                            elif isinstance(image_url, dict):
+                                images.append(image_url["url"])
+                        elif m_type == "text":
+                            user_content_buf.append(m["text"])
                 else:
-                    # Tool message content will always be a string
-                    user_content_str += msg_content
-
+                    user_content_buf.append(msg_content)  # tool-message fallback
             msg_i += 1
 
-        if user_content_str:
-            prompt += f"### User:\n{user_content_str}\n\n"
+        if user_content_buf:
+            prompt_sections.append(f"### User:\n{''.join(user_content_buf)}\n\n")
 
-        system_content_str, msg_i = _handle_ollama_system_message(
-            messages, prompt, msg_i
-        )
+        # SYSTEM SECTION
+        system_content_str, msg_i = _handle_ollama_system_message(messages, None, msg_i)
         if system_content_str:
-            prompt += f"### System:\n{system_content_str}\n\n"
+            prompt_sections.append(f"### System:\n{system_content_str}\n\n")
 
-        assistant_content_str = ""
-        ## MERGE CONSECUTIVE ASSISTANT CONTENT ##
+        # ASSISTANT SECTION
+        assistant_content_buf = []
         while msg_i < len(messages) and messages[msg_i]["role"] == "assistant":
-            assistant_content_str += convert_content_list_to_str(messages[msg_i])
+            # Squeeze string concat for performance
+            assistant_content_buf.append(convert_content_list_to_str(messages[msg_i]))
             msg_i += 1
 
-            tool_calls = messages[msg_i].get("tool_calls")
-            ollama_tool_calls = []
+            # Efficient tool_calls handling
+            tool_calls = messages[msg_i].get("tool_calls", None)
             if tool_calls:
-                for call in tool_calls:
-                    call_id: str = call["id"]
-                    function_name: str = call["function"]["name"]
-                    arguments = json.loads(call["function"]["arguments"])
-
-                    ollama_tool_calls.append(
-                        {
-                            "id": call_id,
-                            "type": "function",
-                            "function": {
-                                "name": function_name,
-                                "arguments": arguments,
-                            },
-                        }
-                    )
-
-            if ollama_tool_calls:
-                assistant_content_str += (
+                ollama_tool_calls = [{
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["function"]["name"],
+                        "arguments": json.loads(call["function"]["arguments"]),
+                    }
+                } for call in tool_calls]
+                assistant_content_buf.append(
                     f"Tool Calls: {json.dumps(ollama_tool_calls, indent=2)}"
                 )
-
                 msg_i += 1
 
-        if assistant_content_str:
-            prompt += f"### Assistant:\n{assistant_content_str}\n\n"
+        if assistant_content_buf:
+            prompt_sections.append(f"### Assistant:\n{''.join(assistant_content_buf)}\n\n")
 
         if msg_i == init_msg_i:  # prevent infinite loops
             raise litellm.BadRequestError(
@@ -268,7 +259,7 @@ def ollama_pt(
             )
 
     response_dict: OllamaVisionModelObject = {
-        "prompt": prompt,
+        "prompt": ''.join(prompt_sections),
         "images": images,
     }
 
