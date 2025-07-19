@@ -351,15 +351,23 @@ def wizardcoder_pt(messages):
 
 # Phind-CodeLlama prompt template - https://huggingface.co/Phind/Phind-CodeLlama-34B-v2#how-to-prompt-the-model
 def phind_codellama_pt(messages):
-    prompt = ""
+    parts = []
     for message in messages:
-        if message["role"] == "system":
-            prompt += "### System Prompt\n" + message["content"] + "\n\n"
-        elif message["role"] == "user":
-            prompt += "### User Message\n" + message["content"] + "\n\n"
-        elif message["role"] == "assistant":
-            prompt += "### Assistant\n" + message["content"] + "\n\n"
-    return prompt
+        role = message["role"]
+        content = message["content"]
+        if role == "system":
+            parts.append("### System Prompt\n")
+            parts.append(content)
+            parts.append("\n\n")
+        elif role == "user":
+            parts.append("### User Message\n")
+            parts.append(content)
+            parts.append("\n\n")
+        elif role == "assistant":
+            parts.append("### Assistant\n")
+            parts.append(content)
+            parts.append("\n\n")
+    return ''.join(parts)
 
 
 def hf_chat_template(  # noqa: PLR0915
