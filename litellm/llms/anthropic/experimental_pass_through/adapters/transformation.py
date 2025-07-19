@@ -14,7 +14,7 @@ from typing import (
 from openai.types.chat.chat_completion_chunk import Choice as OpenAIStreamingChoice
 
 from litellm.types.llms.anthropic import (
-    AllAnthropicToolsValues,
+    ContentBlockContentBlockDict, TextBlock, ToolUseBlock, AllAnthropicToolsValues,
     AnthopicMessagesAssistantMessageParam,
     AnthropicFinishReason,
     AnthropicMessagesRequest,
@@ -54,6 +54,7 @@ from litellm.types.llms.openai import (
 from litellm.types.utils import Choices, ModelResponse, Usage
 
 from .streaming_iterator import AnthropicStreamWrapper
+import uuid
 
 if TYPE_CHECKING:
     from litellm.types.llms.anthropic import ContentBlockContentBlockDict
@@ -458,26 +459,22 @@ class LiteLLMAnthropicMessagesAdapter:
         Literal["text", "tool_use"],
         "ContentBlockContentBlockDict",
     ]:
-        import uuid
-
-        from litellm.types.llms.anthropic import TextBlock, ToolUseBlock
-
         for choice in choices:
-            if choice.delta.content is not None and len(choice.delta.content) > 0:
+            delta = choice.delta
+            if delta.content:
                 return "text", TextBlock(type="text", text="")
             elif (
-                choice.delta.tool_calls is not None
-                and len(choice.delta.tool_calls) > 0
-                and choice.delta.tool_calls[0].function is not None
+                delta.tool_calls 
+                and delta.tool_calls[0].function is not None
             ):
+                tool_call = delta.tool_calls[0]
                 return "tool_use", ToolUseBlock(
                     type="tool_use",
-                    id=choice.delta.tool_calls[0].id or str(uuid.uuid4()),
-                    name=choice.delta.tool_calls[0].function.name or "",
+                    id=tool_call.id or str(uuid.uuid4()),
+                    name=tool_call.function.name or "",
                     input={},
                 )
-
-        return "text", TextBlock(type="text", text="")
+        return "text", TextBlock(type="text", text="")  # Default return
 
     def _translate_streaming_openai_chunk_to_anthropic(
         self, choices: List[OpenAIStreamingChoice]
