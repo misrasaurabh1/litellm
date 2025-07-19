@@ -501,7 +501,7 @@ def deepseek_r1_pt(messages):
 # Anthropic template
 def claude_2_1_pt(
     messages: list,
-):  # format - https://docs.anthropic.com/claude/docs/how-to-use-system-prompts
+):
     """
     Claude v2.1 allows system prompts (no Human: needed), but requires it be followed by Human:
     - you can't just pass a system message
@@ -514,23 +514,31 @@ def claude_2_1_pt(
     See: https://docs.anthropic.com/claude/docs/put-words-in-claudes-mouth
     """
 
-    class AnthropicConstants(Enum):
-        HUMAN_PROMPT = "\n\nHuman: "
-        AI_PROMPT = "\n\nAssistant: "
+    HUMAN_PROMPT = "\n\nHuman: "
+    AI_PROMPT = "\n\nAssistant: "
 
-    prompt = ""
+    prompt_parts = []
+    prev_role = None
+
     for idx, message in enumerate(messages):
-        if message["role"] == "user":
-            prompt += f"{AnthropicConstants.HUMAN_PROMPT.value}{message['content']}"
-        elif message["role"] == "system":
-            prompt += f"{message['content']}"
-        elif message["role"] == "assistant":
-            if idx > 0 and messages[idx - 1]["role"] == "system":
-                prompt += f"{AnthropicConstants.HUMAN_PROMPT.value}"  # Insert a blank human message
-            prompt += f"{AnthropicConstants.AI_PROMPT.value}{message['content']}"
+        role = message["role"]
+        content = message["content"]
+        if role == "user":
+            prompt_parts.append(HUMAN_PROMPT)
+            prompt_parts.append(content)
+        elif role == "system":
+            prompt_parts.append(content)
+        elif role == "assistant":
+            if prev_role == "system":
+                prompt_parts.append(HUMAN_PROMPT)  # Insert a blank human message
+            prompt_parts.append(AI_PROMPT)
+            prompt_parts.append(content)
+        prev_role = role
+
     if messages[-1]["role"] != "assistant":
-        prompt += f"{AnthropicConstants.AI_PROMPT.value}"  # prompt must end with \"\n\nAssistant: " turn
-    return prompt
+        prompt_parts.append(AI_PROMPT)  # prompt must end with "\n\nAssistant: " turn
+
+    return ''.join(prompt_parts)
 
 
 ### TOGETHER AI
