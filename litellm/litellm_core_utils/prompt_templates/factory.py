@@ -130,25 +130,26 @@ def alpaca_pt(messages):
 
 # Llama2 prompt template
 def llama_2_chat_pt(messages):
-    prompt = custom_prompt(
-        role_dict={
-            "system": {
-                "pre_message": "[INST] <<SYS>>\n",
-                "post_message": "\n<</SYS>>\n [/INST]\n",
-            },
-            "user": {  # follow this format https://github.com/facebookresearch/llama/blob/77062717054710e352a99add63d160274ce670c6/llama/generation.py#L348
-                "pre_message": "[INST] ",
-                "post_message": " [/INST]\n",
-            },
-            "assistant": {
-                "post_message": "\n"  # follows this - https://replicate.com/blog/how-to-prompt-llama
-            },
+    # Role dictionary defined once, not on every function call
+    _ROLE_DICT = {
+        "system": {
+            "pre_message": "[INST] <<SYS>>\n",
+            "post_message": "\n<</SYS>>\n [/INST]\n",
         },
+        "user": {  # follow this format https://github.com/facebookresearch/llama/blob/77062717054710e352a99add63d160274ce670c6/llama/generation.py#L348
+            "pre_message": "[INST] ",
+            "post_message": " [/INST]\n",
+        },
+        "assistant": {
+            "post_message": "\n"  # follows this - https://replicate.com/blog/how-to-prompt-llama
+        },
+    }
+    return custom_prompt(
+        role_dict=_ROLE_DICT,
         messages=messages,
         bos_token="<s>",
         eos_token="</s>",
     )
-    return prompt
 
 
 def convert_to_ollama_image(openai_image_url: str):
@@ -3770,44 +3771,44 @@ def custom_prompt(
     bos_token: str = "",
     eos_token: str = "",
 ) -> str:
-    prompt = bos_token + initial_prompt_value
+    parts = []
+    append = parts.append  # local variable for speed
+    if bos_token or initial_prompt_value:
+        append(bos_token + initial_prompt_value)
     bos_open = True
-    ## a bos token is at the start of a system / human message
-    ## an eos token is at the end of the assistant response to the message
+
+    # Create reference to keys for re-use, avoid lookups in loop
+    role_pre = {k: v.get("pre_message", "") for k,v in role_dict.items()}
+    role_post = {k: v.get("post_message", "") for k,v in role_dict.items()}
+    system_human = {"system", "human"}
+
     for message in messages:
         role = message["role"]
-
-        if role in ["system", "human"] and not bos_open:
-            prompt += bos_token
+        if role in system_human and not bos_open:
+            append(bos_token)
             bos_open = True
-
-        pre_message_str = (
-            role_dict[role]["pre_message"]
-            if role in role_dict and "pre_message" in role_dict[role]
-            else ""
-        )
-        post_message_str = (
-            role_dict[role]["post_message"]
-            if role in role_dict and "post_message" in role_dict[role]
-            else ""
-        )
-        if isinstance(message["content"], str):
-            prompt += pre_message_str + message["content"] + post_message_str
-        elif isinstance(message["content"], list):
-            text_str = ""
-            for content in message["content"]:
-                if content.get("text", None) is not None and isinstance(
-                    content["text"], str
-                ):
-                    text_str += content["text"]
-            prompt += pre_message_str + text_str + post_message_str
-
+        pre_message_str = role_pre.get(role, "")
+        post_message_str = role_post.get(role, "")
+        content = message["content"]
+        if isinstance(content, str):
+            append(pre_message_str)
+            append(content)
+            append(post_message_str)
+        elif isinstance(content, list):
+            # Build combined text using a generator expression for speed/memory
+            text_str = ''.join(content["text"]
+                               for content in content
+                               if content.get("text") is not None and isinstance(content["text"], str))
+            append(pre_message_str)
+            append(text_str)
+            append(post_message_str)
         if role == "assistant":
-            prompt += eos_token
+            append(eos_token)
             bos_open = False
 
-    prompt += final_prompt_value
-    return prompt
+    if final_prompt_value:
+        append(final_prompt_value)
+    return ''.join(parts)
 
 
 def prompt_factory(
