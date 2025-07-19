@@ -953,15 +953,23 @@ def convert_to_azure_openai_messages(
     messages: List[AllMessageValues],
 ) -> List[AllMessageValues]:
     for m in messages:
-        if m["role"] == "assistant":
-            function_call = m.get("function_call", None)
-            if function_call is not None:
-                m["function_call"] = _azure_tool_call_invoke_helper(function_call)
-
-        if m["role"] == "user" and isinstance(m.get("content"), list):
-            for content in m.get("content", []):
-                if isinstance(content, dict) and content.get("type") == "image_url":
-                    _azure_image_url_helper(content)  # type: ignore
+        role = m["role"]
+        if role == "assistant":
+            function_call = m.get("function_call")
+            # Only assign to dict if "arguments" is missing
+            if function_call is not None and function_call.get("arguments") is None:
+                function_call["arguments"] = ""
+        elif role == "user":
+            content_list = m.get("content")
+            if isinstance(content_list, list):
+                for content in content_list:
+                    # Combine type check & logical short-circuiting for faster execution
+                    if (
+                        isinstance(content, dict)
+                        and content.get("type") == "image_url"
+                        and isinstance(content.get("image_url"), str)
+                    ):
+                        content["image_url"] = {"url": content["image_url"]}
     return messages
 
 
