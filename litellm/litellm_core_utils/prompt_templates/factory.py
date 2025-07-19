@@ -109,6 +109,7 @@ def map_system_message_pt(messages: list) -> list:
 
 # alpaca prompt template - for models like mythomax, etc.
 def alpaca_pt(messages):
+    # Dict/object creation is not a bottleneck, so we leave as-is.
     prompt = custom_prompt(
         role_dict={
             "system": {
@@ -3770,44 +3771,58 @@ def custom_prompt(
     bos_token: str = "",
     eos_token: str = "",
 ) -> str:
-    prompt = bos_token + initial_prompt_value
+    prompt_parts = []
+    append = prompt_parts.append  # Local bind for speed
+    # Start with bos_token and initial prompt
+    if bos_token or initial_prompt_value:
+        append(bos_token)
+        append(initial_prompt_value)
     bos_open = True
-    ## a bos token is at the start of a system / human message
-    ## an eos token is at the end of the assistant response to the message
+    rd = role_dict  # Local for speed
+
+    pre_message_cache = {}
+    post_message_cache = {}
+
+    # We pre-pull the existence of pre/post_message for roles for O(1) lookups
+    for r in rd:
+        pre_message_cache[r] = rd[r].get("pre_message", "")
+        post_message_cache[r] = rd[r].get("post_message", "")
+
+    # Common string for role checks
+    bos_roles = {"system", "human"}
+
+    # Loop optimization: localize methods, vars
     for message in messages:
         role = message["role"]
-
-        if role in ["system", "human"] and not bos_open:
-            prompt += bos_token
+        # Roles for bos_token injection
+        if role in bos_roles and not bos_open:
+            append(bos_token)
             bos_open = True
 
-        pre_message_str = (
-            role_dict[role]["pre_message"]
-            if role in role_dict and "pre_message" in role_dict[role]
-            else ""
-        )
-        post_message_str = (
-            role_dict[role]["post_message"]
-            if role in role_dict and "post_message" in role_dict[role]
-            else ""
-        )
-        if isinstance(message["content"], str):
-            prompt += pre_message_str + message["content"] + post_message_str
-        elif isinstance(message["content"], list):
-            text_str = ""
-            for content in message["content"]:
-                if content.get("text", None) is not None and isinstance(
-                    content["text"], str
-                ):
-                    text_str += content["text"]
-            prompt += pre_message_str + text_str + post_message_str
+        pre_message_str = pre_message_cache.get(role, "")
+        post_message_str = post_message_cache.get(role, "")
+
+        content = message["content"]
+
+        if isinstance(content, str):
+            append(pre_message_str)
+            append(content)
+            append(post_message_str)
+        elif isinstance(content, list):
+            # Instead of string concat per piece, collect then join
+            text_pieces = [c["text"] for c in content if isinstance(c.get("text", None), str)]
+            append(pre_message_str)
+            if text_pieces:
+                append(''.join(text_pieces))
+            append(post_message_str)
 
         if role == "assistant":
-            prompt += eos_token
+            append(eos_token)
             bos_open = False
 
-    prompt += final_prompt_value
-    return prompt
+    if final_prompt_value:
+        append(final_prompt_value)
+    return ''.join(prompt_parts)
 
 
 def prompt_factory(
