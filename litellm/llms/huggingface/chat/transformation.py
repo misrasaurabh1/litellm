@@ -5,6 +5,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import httpx
 
 from litellm.types.llms.openai import AllMessageValues, ChatCompletionRequest
+from litellm.llms.base_llm.chat.transformation import BaseLLMException
+from litellm.llms.huggingface.common_utils import HuggingFaceError
+from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
@@ -66,9 +69,8 @@ class HuggingFaceChatConfig(OpenAIGPTConfig):
     def get_error_class(
         self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
     ) -> BaseLLMException:
-        return HuggingFaceError(
-            status_code=status_code, message=error_message, headers=headers
-        )
+        # Direct call for minimal overhead
+        return HuggingFaceError(status_code, error_message, headers)
 
     def get_base_url(self, model: str, base_url: Optional[str]) -> Optional[str]:
         """
@@ -100,9 +102,7 @@ class HuggingFaceChatConfig(OpenAIGPTConfig):
             complete_url = api_base
             complete_url = _build_chat_completion_url(complete_url)
         elif os.getenv("HF_API_BASE") or os.getenv("HUGGINGFACE_API_BASE"):
-            complete_url = str(os.getenv("HF_API_BASE")) or str(
-                os.getenv("HUGGINGFACE_API_BASE")
-            )
+            complete_url = str(os.getenv("HF_API_BASE")) or str(os.getenv("HUGGINGFACE_API_BASE"))
         elif model.startswith(("http://", "https://")):
             complete_url = model
             complete_url = _build_chat_completion_url(complete_url)
@@ -135,9 +135,7 @@ class HuggingFaceChatConfig(OpenAIGPTConfig):
         headers: dict,
     ) -> dict:
         if litellm_params.get("api_base"):
-            return dict(
-                ChatCompletionRequest(model=model, messages=messages, **optional_params)
-            )
+            return dict(ChatCompletionRequest(model=model, messages=messages, **optional_params))
         if "max_retries" in optional_params:
             logger.warning("`max_retries` is not supported. It will be ignored.")
             optional_params.pop("max_retries", None)
@@ -161,8 +159,4 @@ class HuggingFaceChatConfig(OpenAIGPTConfig):
             mapped_model = provider_mapping["providerId"]
 
         messages = self._transform_messages(messages=messages, model=mapped_model)
-        return dict(
-            ChatCompletionRequest(
-                model=mapped_model, messages=messages, **optional_params
-            )
-        )
+        return dict(ChatCompletionRequest(model=mapped_model, messages=messages, **optional_params))
