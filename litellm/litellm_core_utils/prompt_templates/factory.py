@@ -295,19 +295,16 @@ def mistral_instruct_pt(messages):
 
 # Falcon prompt template - from https://github.com/lm-sys/FastChat/blob/main/fastchat/conversation.py#L110
 def falcon_instruct_pt(messages):
-    prompt = ""
+    # Collect parts in a list to join at the end for performance
+    parts = []
     for message in messages:
         if message["role"] == "system":
-            prompt += message["content"]
+            parts.append(message["content"])
         else:
-            prompt += (
-                message["role"]
-                + ":"
-                + message["content"].replace("\r\n", "\n").replace("\n\n", "\n")
-            )
-            prompt += "\n\n"
-
-    return prompt
+            # Only build the string once per message; combine all transformations here
+            content = message["content"].replace("\r\n", "\n").replace("\n\n", "\n")
+            parts.append(f'{message["role"]}:{content}\n\n')
+    return ''.join(parts)
 
 
 def falcon_chat_pt(messages):
