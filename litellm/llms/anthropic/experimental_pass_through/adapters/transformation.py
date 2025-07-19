@@ -485,26 +485,34 @@ class LiteLLMAnthropicMessagesAdapter:
         Literal["text_delta", "input_json_delta"],
         Union[ContentTextBlockDelta, ContentJsonBlockDelta],
     ]:
+        # Optimize string concatenation by building lists and joining at the end
+        text_parts = []
+        partial_json_parts = None  # lazy initialize to avoid unnecessary memory
 
-        text: str = ""
-        partial_json: Optional[str] = None
         for choice in choices:
-            if choice.delta.content is not None:
-                text += choice.delta.content
-            elif choice.delta.tool_calls is not None:
-                partial_json = ""
-                for tool in choice.delta.tool_calls:
-                    if (
-                        tool.function is not None
-                        and tool.function.arguments is not None
-                    ):
-                        partial_json += tool.function.arguments
+            delta = choice.delta  # local var for speed
+            content = delta.content
+            if content is not None:
+                text_parts.append(content)
+            else:
+                tool_calls = delta.tool_calls
+                if tool_calls is not None:
+                    if partial_json_parts is None:
+                        partial_json_parts = []
+                    for tool in tool_calls:
+                        fn = tool.function
+                        if fn is not None:
+                            args = fn.arguments
+                            if args is not None:
+                                partial_json_parts.append(args)
 
-        if partial_json is not None:
+        if partial_json_parts is not None:
+            partial_json = ''.join(partial_json_parts)
             return "input_json_delta", ContentJsonBlockDelta(
                 type="input_json_delta", partial_json=partial_json
             )
         else:
+            text = ''.join(text_parts)
             return "text_delta", ContentTextBlockDelta(type="text_delta", text=text)
 
     def translate_streaming_openai_response_to_anthropic(
