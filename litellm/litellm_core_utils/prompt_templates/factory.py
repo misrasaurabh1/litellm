@@ -537,21 +537,34 @@ def claude_2_1_pt(
 
 
 def get_model_info(token, model):
+    """
+    Optimized: 
+    - Reuse a single HTTPHandler for all calls. 
+    - Avoid repeated .strip() calls, 
+    - Reduce dict processing in list loop.
+    """
+    global _global_together_client
     try:
         headers = {"Authorization": f"Bearer {token}"}
-        client = HTTPHandler(concurrent_limit=1)
-        response = client.get("https://api.together.xyz/models/info", headers=headers)
+
+        # Reuse a global client so HTTP pool/SSL is reused as much as possible
+        if _global_together_client is None:
+            _global_together_client = HTTPHandler(concurrent_limit=1)
+        client = _global_together_client
+
+        response = client.get(_to_together_api, headers=headers)
         if response.status_code == 200:
             model_info = response.json()
+            model_stripped = model.strip()
             for m in model_info:
-                if m["name"].lower().strip() == model.strip():
-                    return m["config"].get("prompt_format", None), m["config"].get(
-                        "chat_template", None
-                    )
+                name_norm = m["name"].lower().strip()
+                if name_norm == model_stripped:
+                    conf = m.get("config", {})
+                    return conf.get("prompt_format", None), conf.get("chat_template", None)
             return None, None
         else:
             return None, None
-    except Exception:  # safely fail a prompt template request
+    except Exception:
         return None, None
 
 
@@ -3953,3 +3966,7 @@ def get_attribute_or_key(tool_or_function, attribute, default=None):
     if hasattr(tool_or_function, attribute):
         return getattr(tool_or_function, attribute)
     return tool_or_function.get(attribute, default)
+
+_to_together_api = "https://api.together.xyz/models/info"
+
+_global_together_client = None
