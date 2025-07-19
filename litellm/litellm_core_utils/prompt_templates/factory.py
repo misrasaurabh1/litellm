@@ -325,15 +325,18 @@ def falcon_chat_pt(messages):
 
 # MPT prompt template - from https://github.com/lm-sys/FastChat/blob/main/fastchat/conversation.py#L110
 def mpt_chat_pt(messages):
-    prompt = ""
+    parts = []
+    # Use list accumulation for efficiency, then join once at the end
     for message in messages:
-        if message["role"] == "system":
-            prompt += "<|im_start|>system" + message["content"] + "<|im_end|>" + "\n"
-        elif message["role"] == "assistant":
-            prompt += "<|im_start|>assistant" + message["content"] + "<|im_end|>" + "\n"
-        elif message["role"] == "user":
-            prompt += "<|im_start|>user" + message["content"] + "<|im_end|>" + "\n"
-    return prompt
+        role = message["role"]
+        content = message["content"]
+        if role == "system":
+            parts.append("<|im_start|>system" + content + "<|im_end|>\n")
+        elif role == "assistant":
+            parts.append("<|im_start|>assistant" + content + "<|im_end|>\n")
+        elif role == "user":
+            parts.append("<|im_start|>user" + content + "<|im_end|>\n")
+    return ''.join(parts)
 
 
 # WizardCoder prompt template - https://huggingface.co/WizardLM/WizardCoder-Python-34B-V1.0#prompt-format
