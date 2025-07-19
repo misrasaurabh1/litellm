@@ -338,15 +338,23 @@ def mpt_chat_pt(messages):
 
 # WizardCoder prompt template - https://huggingface.co/WizardLM/WizardCoder-Python-34B-V1.0#prompt-format
 def wizardcoder_pt(messages):
-    prompt = ""
+    # Use a list to accumulate string parts for faster concatenation
+    parts = []
     for message in messages:
-        if message["role"] == "system":
-            prompt += message["content"] + "\n\n"
-        elif message["role"] == "user":  # map to 'Instruction'
-            prompt += "### Instruction:\n" + message["content"] + "\n\n"
-        elif message["role"] == "assistant":  # map to 'Response'
-            prompt += "### Response:\n" + message["content"] + "\n\n"
-    return prompt
+        role = message["role"]
+        content = message["content"]
+        if role == "system":
+            parts.append(content)
+            parts.append("\n\n")
+        elif role == "user":  # map to 'Instruction'
+            parts.append("### Instruction:\n")
+            parts.append(content)
+            parts.append("\n\n")
+        elif role == "assistant":  # map to 'Response'
+            parts.append("### Response:\n")
+            parts.append(content)
+            parts.append("\n\n")
+    return "".join(parts)
 
 
 # Phind-CodeLlama prompt template - https://huggingface.co/Phind/Phind-CodeLlama-34B-v2#how-to-prompt-the-model
