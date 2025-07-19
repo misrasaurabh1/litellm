@@ -1,5 +1,4 @@
 import json
-import urllib
 from typing import Any, Optional, Union
 
 import httpx
@@ -18,6 +17,7 @@ from litellm.utils import CustomStreamWrapper
 from ..base_aws_llm import BaseAWSLLM, Credentials
 from ..common_utils import BedrockError
 from .invoke_handler import AWSEventStreamDecoder, MockResponseIterator, make_call
+from urllib.parse import quote
 
 
 def make_sync_call(
@@ -43,14 +43,10 @@ def make_sync_call(
     )
 
     if response.status_code != 200:
-        raise BedrockError(
-            status_code=response.status_code, message=str(response.read())
-        )
+        raise BedrockError(status_code=response.status_code, message=str(response.read()))
 
     if fake_stream:
-        model_response: (
-            ModelResponse
-        ) = litellm.AmazonConverseConfig()._transform_response(
+        model_response: (ModelResponse) = litellm.AmazonConverseConfig()._transform_response(
             model=model,
             response=response,
             model_response=litellm.ModelResponse(),
@@ -62,9 +58,7 @@ def make_sync_call(
             messages=messages,
             encoding=litellm.encoding,
         )  # type: ignore
-        completion_stream: Any = MockResponseIterator(
-            model_response=model_response, json_mode=json_mode
-        )
+        completion_stream: Any = MockResponseIterator(model_response=model_response, json_mode=json_mode)
     else:
         decoder = AWSEventStreamDecoder(model=model)
         completion_stream = decoder.iter_bytes(response.iter_bytes(chunk_size=1024))
@@ -92,7 +86,7 @@ class BedrockConverseLLM(BaseAWSLLM):
         Returns:
             str: The double-encoded model ID.
         """
-        return urllib.parse.quote(model_id, safe="")  # type: ignore
+        return quote(model_id, safe="")  # type: ignore
 
     async def async_streaming(
         self,
@@ -129,7 +123,7 @@ class BedrockConverseLLM(BaseAWSLLM):
             endpoint_url=api_base,
             data=data,
             headers=headers,
-            api_key=api_key
+            api_key=api_key,
         )
 
         ## LOGGING
@@ -194,7 +188,7 @@ class BedrockConverseLLM(BaseAWSLLM):
             endpoint_url=api_base,
             data=data,
             headers=headers,
-            api_key=api_key
+            api_key=api_key,
         )
 
         ## LOGGING
@@ -215,9 +209,7 @@ class BedrockConverseLLM(BaseAWSLLM):
                 if isinstance(timeout, float) or isinstance(timeout, int):
                     timeout = httpx.Timeout(timeout)
                 _params["timeout"] = timeout
-            client = get_async_httpx_client(
-                params=_params, llm_provider=litellm.LlmProviders.BEDROCK
-            )
+            client = get_async_httpx_client(params=_params, llm_provider=litellm.LlmProviders.BEDROCK)
         else:
             client = client  # type: ignore
 
@@ -301,9 +293,7 @@ class BedrockConverseLLM(BaseAWSLLM):
         aws_sts_endpoint = optional_params.pop("aws_sts_endpoint", None)
         optional_params.pop("aws_region_name", None)
 
-        litellm_params[
-            "aws_region_name"
-        ] = aws_region_name  # [DO NOT DELETE] important for async calls
+        litellm_params["aws_region_name"] = aws_region_name  # [DO NOT DELETE] important for async calls
 
         credentials: Credentials = self.get_credentials(
             aws_access_key_id=aws_access_key_id,
@@ -357,7 +347,7 @@ class BedrockConverseLLM(BaseAWSLLM):
                     json_mode=json_mode,
                     fake_stream=fake_stream,
                     credentials=credentials,
-                    api_key=api_key
+                    api_key=api_key,
                 )  # type: ignore
             ### ASYNC COMPLETION
             return self.async_completion(
@@ -375,7 +365,7 @@ class BedrockConverseLLM(BaseAWSLLM):
                 timeout=timeout,
                 client=client,
                 credentials=credentials,
-                api_key=api_key
+                api_key=api_key,
             )  # type: ignore
 
         ## TRANSFORMATION ##
@@ -394,7 +384,7 @@ class BedrockConverseLLM(BaseAWSLLM):
             endpoint_url=proxy_endpoint_url,
             data=data,
             headers=headers,
-            api_key=api_key
+            api_key=api_key,
         )
 
         ## LOGGING
@@ -419,11 +409,7 @@ class BedrockConverseLLM(BaseAWSLLM):
 
         if stream is not None and stream is True:
             completion_stream = make_sync_call(
-                client=(
-                    client
-                    if client is not None and isinstance(client, HTTPHandler)
-                    else None
-                ),
+                client=(client if client is not None and isinstance(client, HTTPHandler) else None),
                 api_base=proxy_endpoint_url,
                 headers=prepped.headers,  # type: ignore
                 data=data,
