@@ -27,9 +27,7 @@ class CohereEmbeddingConfig:
     def get_supported_openai_params(self) -> List[str]:
         return ["encoding_format"]
 
-    def map_openai_params(
-        self, non_default_params: dict, optional_params: dict
-    ) -> dict:
+    def map_openai_params(self, non_default_params: dict, optional_params: dict) -> dict:
         for k, v in non_default_params.items():
             if k == "encoding_format":
                 optional_params["embedding_types"] = v
@@ -64,25 +62,19 @@ class CohereEmbeddingConfig:
         return transformed_request
 
     def _calculate_usage(self, input: List[str], encoding: Any, meta: dict) -> Usage:
-        input_tokens = 0
+        text_tokens = meta.get("billed_units", {}).get("input_tokens")
+        image_tokens = meta.get("billed_units", {}).get("images")
+        prompt_tokens_details = None
 
-        text_tokens: Optional[int] = meta.get("billed_units", {}).get("input_tokens")
-
-        image_tokens: Optional[int] = meta.get("billed_units", {}).get("images")
-
-        prompt_tokens_details: Optional[PromptTokensDetailsWrapper] = None
         if image_tokens is None and text_tokens is None:
-            for text in input:
-                input_tokens += len(encoding.encode(text))
+            # Use generator expression for efficient token summing
+            input_tokens = sum(len(encoding.encode(text)) for text in input)
         else:
             prompt_tokens_details = PromptTokensDetailsWrapper(
                 image_tokens=image_tokens,
                 text_tokens=text_tokens,
             )
-            if image_tokens:
-                input_tokens += image_tokens
-            if text_tokens:
-                input_tokens += text_tokens
+            input_tokens = (image_tokens or 0) + (text_tokens or 0)
 
         return Usage(
             prompt_tokens=input_tokens,
@@ -103,37 +95,21 @@ class CohereEmbeddingConfig:
         input: list,
     ) -> EmbeddingResponse:
         response_json = response.json()
-        ## LOGGING
+        # LOGGING
         logging_obj.post_call(
             input=input,
             api_key=api_key,
             additional_args={"complete_input_dict": data},
             original_response=response_json,
         )
-        """
-            response 
-            {
-                'object': "list",
-                'data': [
-                
-                ]
-                'model', 
-                'usage'
-            }
-        """
         embeddings = response_json["embeddings"]
-        output_data = []
-        for idx, embedding in enumerate(embeddings):
-            output_data.append(
-                {"object": "embedding", "index": idx, "embedding": embedding}
-            )
+        # Use simple indexed-form listbuild instead of appending in a loop
+        output_data = [{"object": "embedding", "index": i, "embedding": emb} for i, emb in enumerate(embeddings)]
+
         model_response.object = "list"
         model_response.data = output_data
         model_response.model = model
-        input_tokens = 0
-        for text in input:
-            input_tokens += len(encoding.encode(text))
-
+        # Only sum up token lengths if meta doesn't specify it
         setattr(
             model_response,
             "usage",
