@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Union, Any, List, Optional, Tuple, cast, overload
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -736,21 +736,30 @@ def convert_to_anthropic_image_obj(
     }
     """
     try:
-        if openai_image_url.startswith("http"):
-            openai_image_url = convert_url_to_base64(url=openai_image_url)
-        # Extract the media type and base64 data
-        media_type, base64_data = openai_image_url.split("data:")[1].split(";base64,")
+        b64_url = openai_image_url
+        if b64_url.startswith("http"):
+            b64_url = convert_url_to_base64(url=b64_url)
+
+        # Only split once, and don't use [] deref/slice twice.
+        idx = b64_url.find("data:")
+        if idx == -1:
+            raise Exception("Image url not in expected format")
+        type_start = idx + 5
+        semi_idx = b64_url.find(";base64,", type_start)
+        if semi_idx == -1:
+            raise Exception("Image url not in expected format")
+        media_type = b64_url[type_start:semi_idx]
+        base64_data = b64_url[semi_idx + 8:]
 
         if format:
+            # No replace needed.
             media_type = format
         else:
-            media_type = media_type.replace("\\/", "/")
+            # Only do replace if needed.
+            if "\\/" in media_type:
+                media_type = media_type.replace("\\/", "/")
 
-        return GenericImageParsingChunk(
-            type="base64",
-            media_type=media_type,
-            data=base64_data,
-        )
+        return GenericImageParsingChunk(type="base64", media_type=media_type, data=base64_data)
     except Exception as e:
         if "Error: Unable to fetch image from URL" in str(e):
             raise e
@@ -1180,49 +1189,25 @@ def convert_to_anthropic_tool_result(
         "content": "function result goes here",
     }
     """
-
-    """
-    Anthropic tool_results look like:
-    {
-        "role": "user",
-        "content": [
-            {
-                "type": "tool_result",
-                "tool_use_id": "toolu_01A09q90qw90lq917835lq9",
-                "content": "ConnectionError: the weather service API is not available (HTTP 500)",
-                # "is_error": true
-            }
-        ]
-    }
-    """
-    anthropic_content: Union[
-        str,
-        List[Union[AnthropicMessagesToolResultContent, AnthropicMessagesImageParam]],
-    ] = ""
-    if isinstance(message["content"], str):
-        anthropic_content = message["content"]
-    elif isinstance(message["content"], List):
-        content_list = message["content"]
-        anthropic_content_list: List[
-            Union[AnthropicMessagesToolResultContent, AnthropicMessagesImageParam]
-        ] = []
-        for content in content_list:
-            if content["type"] == "text":
+    msg_content = message["content"]
+    # Almost always a string, or (rare) list only in special cases.
+    if isinstance(msg_content, str):
+        anthropic_content = msg_content
+    elif isinstance(msg_content, list):
+        anthropic_content_list = []
+        for content in msg_content:
+            ctype = content.get("type", "")
+            if ctype == "text":
                 anthropic_content_list.append(
-                    AnthropicMessagesToolResultContent(
-                        type="text",
-                        text=content["text"],
-                    )
+                    AnthropicMessagesToolResultContent(type="text", text=content["text"])
                 )
-            elif content["type"] == "image_url":
-                if isinstance(content["image_url"], str):
-                    image_chunk = convert_to_anthropic_image_obj(
-                        content["image_url"], format=None
-                    )
+            elif ctype == "image_url":
+                image_url_val = content["image_url"]
+                if isinstance(image_url_val, str):
+                    image_chunk = convert_to_anthropic_image_obj(image_url_val, format=None)
                 else:
-                    format = content["image_url"].get("format")
                     image_chunk = convert_to_anthropic_image_obj(
-                        content["image_url"]["url"], format=format
+                        image_url_val["url"], format=image_url_val.get("format")
                     )
                 anthropic_content_list.append(
                     AnthropicMessagesImageParam(
@@ -1234,32 +1219,30 @@ def convert_to_anthropic_tool_result(
                         ),
                     )
                 )
-
         anthropic_content = anthropic_content_list
-    anthropic_tool_result: Optional[AnthropicMessagesToolResultParam] = None
-    ## PROMPT CACHING CHECK ##
+    else:
+        anthropic_content = msg_content
+
     cache_control = message.get("cache_control", None)
+
+    # "tool" vs "function" role
     if message["role"] == "tool":
-        tool_message: ChatCompletionToolMessage = message
-        tool_call_id: str = tool_message["tool_call_id"]
-
-        # We can't determine from openai message format whether it's a successful or
-        # error call result so default to the successful result template
+        tool_call_id: str = message["tool_call_id"]
         anthropic_tool_result = AnthropicMessagesToolResultParam(
             type="tool_result", tool_use_id=tool_call_id, content=anthropic_content
         )
-
-    if message["role"] == "function":
-        function_message: ChatCompletionFunctionMessage = message
-        tool_call_id = function_message.get("tool_call_id") or str(uuid.uuid4())
+    elif message["role"] == "function":
+        tool_call_id = message.get("tool_call_id") or str(uuid.uuid4())
         anthropic_tool_result = AnthropicMessagesToolResultParam(
             type="tool_result", tool_use_id=tool_call_id, content=anthropic_content
         )
-
-    if anthropic_tool_result is None:
+    else:
         raise Exception(f"Unable to parse anthropic tool result for message: {message}")
-    if cache_control is not None:
-        anthropic_tool_result["cache_control"] = cache_control  # type: ignore
+
+    # Fast path for cache control, avoid add_cache_control_to_content call
+    if cache_control is not None and isinstance(cache_control, dict):
+        anthropic_tool_result["cache_control"] = ChatCompletionCachedContent(**cache_control)  # type: ignore
+
     return anthropic_tool_result
 
 
@@ -1269,15 +1252,16 @@ def convert_function_to_anthropic_tool_invoke(
     try:
         _name = get_attribute_or_key(function_call, "name") or ""
         _arguments = get_attribute_or_key(function_call, "arguments")
-        anthropic_tool_invoke = [
+        # Optimize: parse json just once
+        loaded_args = json.loads(_arguments) if _arguments else {}
+        return [
             AnthropicMessagesToolUseParam(
                 type="tool_use",
                 id=str(uuid.uuid4()),
                 name=_name,
-                input=json.loads(_arguments) if _arguments else {},
+                input=loaded_args,
             )
         ]
-        return anthropic_tool_invoke
     except Exception as e:
         raise e
 
@@ -1296,64 +1280,37 @@ def convert_to_anthropic_tool_invoke(
           "type": "function",
           "function": {
             "name": "get_current_weather",
-            "arguments": "{\n\"location\": \"Boston, MA\"\n}"
+            "arguments": "{
+"location": "Boston, MA"
+}"
           }
         }
       ]
     },
     """
-
-    """
-    Anthropic tool invokes:
-    {
-      "role": "assistant",
-      "content": [
-        {
-          "type": "text",
-          "text": "<thinking>To answer this question, I will: 1. Use the get_weather tool to get the current weather in San Francisco. 2. Use the get_time tool to get the current time in the America/Los_Angeles timezone, which covers San Francisco, CA.</thinking>"
-        },
-        {
-          "type": "tool_use",
-          "id": "toolu_01A09q90qw90lq917835lq9",
-          "name": "get_weather",
-          "input": {"location": "San Francisco, CA"}
-        }
-      ]
-    }
-    """
-    anthropic_tool_invoke = []
-
+    res = []
     for tool in tool_calls:
-        if not get_attribute_or_key(tool, "type") == "function":
+        if get_attribute_or_key(tool, "type") != "function":
             continue
 
-        _anthropic_tool_use_param = AnthropicMessagesToolUseParam(
+        func_obj = get_attribute_or_key(tool, "function")
+        _id = get_attribute_or_key(tool, "id")
+        _name = get_attribute_or_key(func_obj, "name")
+        arguments = get_attribute_or_key(func_obj, "arguments")
+        loaded_args = json.loads(arguments)
+        param = AnthropicMessagesToolUseParam(
             type="tool_use",
-            id=cast(str, get_attribute_or_key(tool, "id")),
-            name=cast(
-                str,
-                get_attribute_or_key(get_attribute_or_key(tool, "function"), "name"),
-            ),
-            input=json.loads(
-                get_attribute_or_key(
-                    get_attribute_or_key(tool, "function"), "arguments"
-                )
-            ),
+            id=cast(str, _id),
+            name=cast(str, _name),
+            input=loaded_args,
         )
+        # Inline add_cache_control_to_content logic for just this param (avoid dict conversion for small benefit).
+        cache_control_param = tool.get("cache_control")
+        if cache_control_param is not None and isinstance(cache_control_param, dict):
+            param["cache_control"] = ChatCompletionCachedContent(**cache_control_param)  # type: ignore
 
-        _content_element = add_cache_control_to_content(
-            anthropic_content_element=_anthropic_tool_use_param,
-            orignal_content_element=dict(tool),
-        )
-
-        if "cache_control" in _content_element:
-            _anthropic_tool_use_param["cache_control"] = _content_element[
-                "cache_control"
-            ]
-
-        anthropic_tool_invoke.append(_anthropic_tool_use_param)
-
-    return anthropic_tool_invoke
+        res.append(param)
+    return res
 
 
 def add_cache_control_to_content(
@@ -1367,22 +1324,19 @@ def add_cache_control_to_content(
     ],
     orignal_content_element: Union[dict, AllMessageValues],
 ):
+    # Inline logic: skip cast, no dict calls.
     cache_control_param = orignal_content_element.get("cache_control")
     if cache_control_param is not None and isinstance(cache_control_param, dict):
-        transformed_param = ChatCompletionCachedContent(**cache_control_param)  # type: ignore
-
-        anthropic_content_element["cache_control"] = transformed_param
-
+        anthropic_content_element["cache_control"] = ChatCompletionCachedContent(**cache_control_param)  # type: ignore
     return anthropic_content_element
 
 
 def _anthropic_content_element_factory(
     image_chunk: GenericImageParsingChunk,
 ) -> Union[AnthropicMessagesImageParam, AnthropicMessagesDocumentParam]:
+    # No change, already very fast, reduce duplicate code.
     if image_chunk["media_type"] == "application/pdf":
-        _anthropic_content_element: Union[
-            AnthropicMessagesDocumentParam, AnthropicMessagesImageParam
-        ] = AnthropicMessagesDocumentParam(
+        return AnthropicMessagesDocumentParam(
             type="document",
             source=AnthropicContentParamSource(
                 type="base64",
@@ -1391,7 +1345,7 @@ def _anthropic_content_element_factory(
             ),
         )
     else:
-        _anthropic_content_element = AnthropicMessagesImageParam(
+        return AnthropicMessagesImageParam(
             type="image",
             source=AnthropicContentParamSource(
                 type="base64",
@@ -1399,8 +1353,6 @@ def _anthropic_content_element_factory(
                 data=image_chunk["data"],
             ),
         )
-
-    return _anthropic_content_element
 
 
 def select_anthropic_content_block_type_for_file(
@@ -1436,7 +1388,7 @@ def anthropic_process_openai_file_message(
     AnthropicMessagesImageParam,
     AnthropicMessagesContainerUploadParam,
 ]:
-    file_message = cast(ChatCompletionFileObject, message)
+    file_message = message if isinstance(message, dict) else dict(message)
     file_data = file_message["file"].get("file_data")
     file_id = file_message["file"].get("file_id")
     format = file_message["file"].get("format")
@@ -1445,7 +1397,7 @@ def anthropic_process_openai_file_message(
             openai_image_url=file_data,
             format=format,
         )
-        anthropic_document_param = AnthropicMessagesDocumentParam(
+        return AnthropicMessagesDocumentParam(
             type="document",
             source=AnthropicContentParamSource(
                 type="base64",
@@ -1453,22 +1405,14 @@ def anthropic_process_openai_file_message(
                 data=image_chunk["data"],
             ),
         )
-        return anthropic_document_param
     elif file_id:
-        content_block_type = (
-            select_anthropic_content_block_type_for_file(format)
-            if format
-            else anthropic_infer_file_id_content_type(file_id)
-        )
-        return_block_param: Optional[
-            Union[
-                AnthropicMessagesDocumentParam,
-                AnthropicMessagesImageParam,
-                AnthropicMessagesContainerUploadParam,
-            ]
-        ] = None
+        # Inline the content block selection, avoid re-calling for each content_block_type string.
+        if format:
+            content_block_type = select_anthropic_content_block_type_for_file(format)
+        else:
+            content_block_type = anthropic_infer_file_id_content_type(file_id)
         if content_block_type == "document":
-            return_block_param = AnthropicMessagesDocumentParam(
+            return AnthropicMessagesDocumentParam(
                 type="document",
                 source=AnthropicContentParamSourceFileId(
                     type="file",
@@ -1476,7 +1420,7 @@ def anthropic_process_openai_file_message(
                 ),
             )
         elif content_block_type == "document_url":
-            return_block_param = AnthropicMessagesDocumentParam(
+            return AnthropicMessagesDocumentParam(
                 type="document",
                 source=AnthropicContentParamSourceUrl(
                     type="url",
@@ -1484,7 +1428,7 @@ def anthropic_process_openai_file_message(
                 ),
             )
         elif content_block_type == "image":
-            return_block_param = AnthropicMessagesImageParam(
+            return AnthropicMessagesImageParam(
                 type="image",
                 source=AnthropicContentParamSourceFileId(
                     type="file",
@@ -1492,13 +1436,10 @@ def anthropic_process_openai_file_message(
                 ),
             )
         elif content_block_type == "container_upload":
-            return_block_param = AnthropicMessagesContainerUploadParam(
+            return AnthropicMessagesContainerUploadParam(
                 type="container_upload", file_id=file_id
             )
-
-        if return_block_param is None:
-            raise Exception(f"Unable to parse anthropic file message: {message}")
-        return return_block_param
+        raise Exception(f"Unable to parse anthropic file message: {message}")
     raise Exception(
         f"Either file_data or file_id must be present in the file message: {message}"
     )
@@ -1523,9 +1464,7 @@ def anthropic_messages_pt(  # noqa: PLR0915
     5. System messages are a separate param to the Messages API
     6. Ensure we only accept role, content. (message.name is not supported)
     """
-    # add role=tool support to allow function call result/error submission
     user_message_types = {"user", "tool", "function"}
-    # reformat messages to ensure user/assistant are alternating, if there's either 2 consecutive 'user' messages or 2 consecutive 'assistant' message, merge them.
     new_messages: List[
         Union[
             AnthropicMessagesUserMessageParam,
@@ -1533,217 +1472,144 @@ def anthropic_messages_pt(  # noqa: PLR0915
         ]
     ] = []
 
-    if len(messages) == 0:
+    if not messages:
         if not litellm.modify_params:
             raise litellm.BadRequestError(
                 message=f"Anthropic requires at least one non-system message. Either provide one, or set `litellm.modify_params = True` // `litellm_settings::modify_params: True` to add the dummy user message - {DEFAULT_USER_CONTINUE_MESSAGE_TYPED}.",
                 model=model,
                 llm_provider=llm_provider,
             )
-        else:
-            messages.append(DEFAULT_USER_CONTINUE_MESSAGE_TYPED)
+        messages = [DEFAULT_USER_CONTINUE_MESSAGE_TYPED]
 
     msg_i = 0
-    while msg_i < len(messages):
-        user_content: List[AnthropicMessagesUserMessageValues] = []
+    len_messages = len(messages)
+    while msg_i < len_messages:
+        user_content = []
         init_msg_i = msg_i
-        if isinstance(messages[msg_i], BaseModel):
-            messages[msg_i] = dict(messages[msg_i])  # type: ignore
-        ## MERGE CONSECUTIVE USER CONTENT ##
-        while msg_i < len(messages) and messages[msg_i]["role"] in user_message_types:
-            user_message_types_block: Union[
-                ChatCompletionToolMessage,
-                ChatCompletionUserMessage,
-                ChatCompletionFunctionMessage,
-            ] = messages[
-                msg_i
-            ]  # type: ignore
-            if user_message_types_block["role"] == "user":
-                if isinstance(user_message_types_block["content"], list):
-                    for m in user_message_types_block["content"]:
-                        if m.get("type", "") == "image_url":
-                            m = cast(ChatCompletionImageObject, m)
-                            format: Optional[str] = None
-                            if isinstance(m["image_url"], str):
+        message_obj = messages[msg_i]
+        if hasattr(message_obj, "dict"):  # For BaseModel
+            message_obj = message_obj.dict()  # type: ignore
+            messages[msg_i] = message_obj
+
+        # Fast merge consecutive user/tool/function blocks.
+        while msg_i < len_messages and messages[msg_i]["role"] in user_message_types:
+            block = messages[msg_i]
+            role = block["role"]
+            content_val = block["content"]
+            if role == "user":
+                if isinstance(content_val, list):
+                    for m in content_val:
+                        mtype = m.get("type", "")
+                        if mtype == "image_url":
+                            img_url_val = m["image_url"]
+                            format_opt = None
+                            if isinstance(img_url_val, str):
                                 image_chunk = convert_to_anthropic_image_obj(
-                                    openai_image_url=m["image_url"], format=None
-                                )
+                                    openai_image_url=img_url_val, format=None)
                             else:
-                                format = m["image_url"].get("format")
+                                format_opt = img_url_val.get("format")
                                 image_chunk = convert_to_anthropic_image_obj(
-                                    openai_image_url=m["image_url"]["url"],
-                                    format=format,
-                                )
-
-                            _anthropic_content_element = (
-                                _anthropic_content_element_factory(image_chunk)
+                                    openai_image_url=img_url_val["url"], format=format_opt)
+                            anthropic_elem = _anthropic_content_element_factory(image_chunk)
+                            add_cache_control_to_content(
+                                anthropic_elem, m
                             )
-                            _content_element = add_cache_control_to_content(
-                                anthropic_content_element=_anthropic_content_element,
-                                orignal_content_element=dict(m),
+                            user_content.append(anthropic_elem)
+                        elif mtype == "text":
+                            text_elem = AnthropicMessagesTextParam(
+                                type="text",
+                                text=m["text"],
                             )
-
-                            if "cache_control" in _content_element:
-                                _anthropic_content_element["cache_control"] = (
-                                    _content_element["cache_control"]
-                                )
-                            user_content.append(_anthropic_content_element)
-                        elif m.get("type", "") == "text":
-                            m = cast(ChatCompletionTextObject, m)
-                            _anthropic_text_content_element = (
-                                AnthropicMessagesTextParam(
-                                    type="text",
-                                    text=m["text"],
-                                )
+                            add_cache_control_to_content(
+                                text_elem, m
                             )
-                            _content_element = add_cache_control_to_content(
-                                anthropic_content_element=_anthropic_text_content_element,
-                                orignal_content_element=dict(m),
-                            )
-                            _content_element = cast(
-                                AnthropicMessagesTextParam, _content_element
-                            )
-
-                            user_content.append(_content_element)
-                        elif m.get("type", "") == "document":
-                            user_content.append(cast(AnthropicMessagesDocumentParam, m))
-                        elif m.get("type", "") == "file":
+                            user_content.append(text_elem)
+                        elif mtype == "document":
+                            user_content.append(m)
+                        elif mtype == "file":
                             user_content.append(
-                                anthropic_process_openai_file_message(
-                                    cast(ChatCompletionFileObject, m)
-                                )
+                                anthropic_process_openai_file_message(m)
                             )
-                elif isinstance(user_message_types_block["content"], str):
-                    _anthropic_content_text_element: AnthropicMessagesTextParam = {
-                        "type": "text",
-                        "text": user_message_types_block["content"],
-                    }
-                    _content_element = add_cache_control_to_content(
-                        anthropic_content_element=_anthropic_content_text_element,
-                        orignal_content_element=dict(user_message_types_block),
+                elif isinstance(content_val, str):
+                    text_elem = AnthropicMessagesTextParam(
+                        type="text",
+                        text=content_val,
                     )
-
-                    if "cache_control" in _content_element:
-                        _anthropic_content_text_element["cache_control"] = (
-                            _content_element["cache_control"]
-                        )
-
-                    user_content.append(_anthropic_content_text_element)
-
-            elif (
-                user_message_types_block["role"] == "tool"
-                or user_message_types_block["role"] == "function"
-            ):
-                # OpenAI's tool message content will always be a string
+                    add_cache_control_to_content(text_elem, block)
+                    user_content.append(text_elem)
+            elif role in ("tool", "function"):
                 user_content.append(
-                    convert_to_anthropic_tool_result(user_message_types_block)
+                    convert_to_anthropic_tool_result(block)
                 )
-
             msg_i += 1
 
         if user_content:
             new_messages.append({"role": "user", "content": user_content})
 
-        assistant_content: List[AnthropicMessagesAssistantMessageValues] = []
-        ## MERGE CONSECUTIVE ASSISTANT CONTENT ##
-        while msg_i < len(messages) and messages[msg_i]["role"] == "assistant":
-            assistant_content_block: ChatCompletionAssistantMessage = messages[msg_i]  # type: ignore
-
-            thinking_blocks = assistant_content_block.get("thinking_blocks", None)
-            if (
-                thinking_blocks is not None
-            ):  # IMPORTANT: ADD THIS FIRST, ELSE ANTHROPIC WILL RAISE AN ERROR
+        assistant_content = []
+        # Merge consecutive assistant blocks.
+        while msg_i < len_messages and messages[msg_i]["role"] == "assistant":
+            block = messages[msg_i]
+            thinking_blocks = block.get("thinking_blocks", None)
+            if thinking_blocks is not None:
                 assistant_content.extend(thinking_blocks)
-            if "content" in assistant_content_block and isinstance(
-                assistant_content_block["content"], list
-            ):
-                for m in assistant_content_block["content"]:
-                    # handle thinking blocks
-                    thinking_block = cast(str, m.get("thinking", ""))
-                    text_block = cast(str, m.get("text", ""))
-                    if (
-                        m.get("type", "") == "thinking" and len(thinking_block) > 0
-                    ):  # don't pass empty text blocks. anthropic api raises errors.
-                        anthropic_message: Union[
-                            ChatCompletionThinkingBlock,
-                            AnthropicMessagesTextParam,
-                        ] = cast(ChatCompletionThinkingBlock, m)
-                        assistant_content.append(anthropic_message)
-                    # handle text
-                    elif (
-                        m.get("type", "") == "text" and len(text_block) > 0
-                    ):  # don't pass empty text blocks. anthropic api raises errors.
-                        anthropic_message = AnthropicMessagesTextParam(
-                            type="text", text=text_block
-                        )
-                        _cached_message = add_cache_control_to_content(
-                            anthropic_content_element=anthropic_message,
-                            orignal_content_element=dict(m),
-                        )
 
-                        assistant_content.append(
-                            cast(AnthropicMessagesTextParam, _cached_message)
-                        )
-            elif (
-                "content" in assistant_content_block
-                and isinstance(assistant_content_block["content"], str)
-                and assistant_content_block[
-                    "content"
-                ]  # don't pass empty text blocks. anthropic api raises errors.
-            ):
-                _anthropic_text_content_element = AnthropicMessagesTextParam(
-                    type="text",
-                    text=assistant_content_block["content"],
-                )
-
-                _content_element = add_cache_control_to_content(
-                    anthropic_content_element=_anthropic_text_content_element,
-                    orignal_content_element=dict(assistant_content_block),
-                )
-
-                if "cache_control" in _content_element:
-                    _anthropic_text_content_element["cache_control"] = _content_element[
-                        "cache_control"
-                    ]
-
-                assistant_content.append(_anthropic_text_content_element)
-
-            assistant_tool_calls = assistant_content_block.get("tool_calls")
-            if (
-                assistant_tool_calls is not None
-            ):  # support assistant tool invoke conversion
+            if "content" in block:
+                ac = block["content"]
+                if isinstance(ac, list):
+                    for m in ac:
+                        mtype = m.get("type", "")
+                        if mtype == "thinking":
+                            thinking_block = m.get("thinking", "")
+                            if len(thinking_block) > 0:
+                                assistant_content.append(m)
+                        elif mtype == "text":
+                            text_block = m.get("text", "")
+                            if len(text_block) > 0:
+                                text_elem = AnthropicMessagesTextParam(
+                                    type="text", text=text_block
+                                )
+                                add_cache_control_to_content(text_elem, m)
+                                assistant_content.append(text_elem)
+                elif isinstance(ac, str) and ac:
+                    text_elem = AnthropicMessagesTextParam(
+                        type="text",
+                        text=ac,
+                    )
+                    add_cache_control_to_content(text_elem, block)
+                    assistant_content.append(text_elem)
+            # Assistant tool/function blocks
+            assistant_tool_calls = block.get("tool_calls")
+            if assistant_tool_calls is not None:
                 assistant_content.extend(
                     convert_to_anthropic_tool_invoke(assistant_tool_calls)
                 )
-
-            assistant_function_call = assistant_content_block.get("function_call")
-
+            assistant_function_call = block.get("function_call")
             if assistant_function_call is not None:
                 assistant_content.extend(
                     convert_function_to_anthropic_tool_invoke(assistant_function_call)
                 )
-
             msg_i += 1
 
         if assistant_content:
             new_messages.append({"role": "assistant", "content": assistant_content})
 
-        if msg_i == init_msg_i:  # prevent infinite loops
+        if msg_i == init_msg_i:  # Prevent infinite loops
             raise litellm.BadRequestError(
                 message=BAD_MESSAGE_ERROR_STR + f"passed in {messages[msg_i]}",
                 model=model,
                 llm_provider=llm_provider,
             )
 
-    if len(new_messages) > 0 and new_messages[-1]["role"] == "assistant":
-        if isinstance(new_messages[-1]["content"], str):
-            new_messages[-1]["content"] = new_messages[-1]["content"].rstrip()
-        elif isinstance(new_messages[-1]["content"], list):
-            for content in new_messages[-1]["content"]:
-                if isinstance(content, dict) and content["type"] == "text":
-                    content["text"] = content[
-                        "text"
-                    ].rstrip()  # no trailing whitespace for final assistant message
+    # Strip trailing whitespace in final assistant content (no unnecessary isinstance/dict dance).
+    if new_messages and new_messages[-1]["role"] == "assistant":
+        last_content = new_messages[-1]["content"]
+        if isinstance(last_content, str):
+            new_messages[-1]["content"] = last_content.rstrip()
+        elif isinstance(last_content, list):
+            for content in last_content:
+                if isinstance(content, dict) and content.get("type", "") == "text":
+                    content["text"] = content["text"].rstrip()
 
     return new_messages
 
@@ -3953,3 +3819,9 @@ def get_attribute_or_key(tool_or_function, attribute, default=None):
     if hasattr(tool_or_function, attribute):
         return getattr(tool_or_function, attribute)
     return tool_or_function.get(attribute, default)
+
+
+def _maybe_dict(obj):
+    if not isinstance(obj, dict):
+        return dict(obj)
+    return obj
