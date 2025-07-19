@@ -82,27 +82,35 @@ def map_system_message_pt(messages: list) -> list:
 
     if next message is system -> append a user message instead of the system message
     """
-
     new_messages = []
-    for i, m in enumerate(messages):
+    n = len(messages)
+    # Use local variable for frequently accessed methods/fields
+    append = new_messages.append
+
+    # Fast path: handle all except possibly last message
+    for i in range(n - 1):
+        m = messages[i]
+        m_role = m["role"]
+        if m_role == "system":
+            next_m = messages[i + 1]
+            next_role = next_m["role"]
+            if next_role == "user" or next_role == "assistant":
+                # Merge system prompt into next message (do in-place update)
+                next_m["content"] = f'{m["content"]} {next_m["content"]}'
+            elif next_role == "system":
+                # Append user message for system
+                append({"role": "user", "content": m["content"]})
+            # else: do not append system messages
+        else:
+            append(m)
+
+    # Handle the last message separately (avoids len(messages)-1 check in every iteration)
+    if n:
+        m = messages[-1]
         if m["role"] == "system":
-            if i < len(messages) - 1:  # Not the last message
-                next_m = messages[i + 1]
-                next_role = next_m["role"]
-                if (
-                    next_role == "user" or next_role == "assistant"
-                ):  # Next message is a user or assistant message
-                    # Merge system prompt into the next message
-                    next_m["content"] = m["content"] + " " + next_m["content"]
-                elif next_role == "system":  # Next message is a system message
-                    # Append a user message instead of the system message
-                    new_message = {"role": "user", "content": m["content"]}
-                    new_messages.append(new_message)
-            else:  # Last message
-                new_message = {"role": "user", "content": m["content"]}
-                new_messages.append(new_message)
-        else:  # Not a system message
-            new_messages.append(m)
+            append({"role": "user", "content": m["content"]})
+        else:
+            append(m)
 
     return new_messages
 
