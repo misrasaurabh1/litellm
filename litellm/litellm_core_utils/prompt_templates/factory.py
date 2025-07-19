@@ -14,7 +14,7 @@ import litellm.types.llms
 from litellm import verbose_logger
 from litellm.llms.custom_httpx.http_handler import HTTPHandler, get_async_httpx_client
 from litellm.types.llms.anthropic import *
-from litellm.types.llms.bedrock import MessageBlock as BedrockMessageBlock
+from litellm.types.llms.bedrock import BedrockConverseReasoningContentBlock, BedrockConverseReasoningTextBlock, ContentBlock as BedrockContentBlock, DocumentBlock as BedrockDocumentBlock, ImageBlock as BedrockImageBlock, SourceBlock as BedrockSourceBlock, ToolBlock as BedrockToolBlock, ToolInputSchemaBlock as BedrockToolInputSchemaBlock, ToolJsonSchemaBlock as BedrockToolJsonSchemaBlock, ToolResultBlock as BedrockToolResultBlock, ToolResultContentBlock as BedrockToolResultContentBlock, ToolSpecBlock as BedrockToolSpecBlock, ToolUseBlock as BedrockToolUseBlock, VideoBlock as BedrockVideoBlock, MessageBlock as BedrockMessageBlock
 from litellm.types.llms.custom_http import httpxSpecialProvider
 from litellm.types.llms.ollama import OllamaVisionModelObject
 from litellm.types.llms.openai import (
@@ -37,6 +37,11 @@ from litellm.types.utils import GenericImageParsingChunk
 
 from .common_utils import convert_content_list_to_str, is_non_content_values_set
 from .image_handling import convert_url_to_base64
+import base64
+import httpx
+import mimetypes
+from email.message import Message
+from litellm.types.llms.cohere import CallObject, ChatHistory, ChatHistoryChatBot, ChatHistorySystem, ChatHistoryToolResult, ChatHistoryUser, ToolCallObject, ToolResultObject
 
 
 def default_pt(messages):
@@ -671,16 +676,23 @@ def construct_format_tool_for_claude_prompt(name, description, parameters):
 
 def construct_tool_use_system_prompt(
     tools,
-):  # from https://github.com/anthropics/anthropic-cookbook/blob/main/function_calling/function_calling.ipynb
-    tool_str_list = []
+):
+    # Optimization: minimize get_attribute_or_key calls and string join overhead
+    append_tool_str = []
+    # Localize function for speed
+    _get = get_attribute_or_key
+    _construct = construct_format_tool_for_claude_prompt
+    
     for tool in tools:
-        tool_function = get_attribute_or_key(tool, "function")
-        tool_str = construct_format_tool_for_claude_prompt(
-            get_attribute_or_key(tool_function, "name"),
-            get_attribute_or_key(tool_function, "description", ""),
-            get_attribute_or_key(tool_function, "parameters", {}),
-        )
-        tool_str_list.append(tool_str)
+        tool_function = _get(tool, "function")
+        # Cache the values up front, only one hasattr/dict per key per function!
+        name = _get(tool_function, "name")
+        description = _get(tool_function, "description", "")
+        parameters = _get(tool_function, "parameters", {})
+        append_tool_str.append(_construct(name, description, parameters))
+
+    tools_str = "\n".join(append_tool_str)
+    # Build system prompt in one go, with minimal repeated code
     tool_use_system_prompt = (
         "In this environment you have access to a set of tools you can use to answer the user's question.\n"
         "\n"
@@ -696,7 +708,9 @@ def construct_tool_use_system_prompt(
         "</function_calls>\n"
         "\n"
         "Here are the tools available:\n"
-        "<tools>\n" + "\n".join([tool_str for tool_str in tool_str_list]) + "\n</tools>"
+        "<tools>\n"
+        f"{tools_str}\n"
+        "</tools>"
     )
     return tool_use_system_prompt
 
