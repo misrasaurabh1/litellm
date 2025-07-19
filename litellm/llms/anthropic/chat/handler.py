@@ -532,43 +532,43 @@ class ModelResponseIterator:
         """
         Helper function to handle the content block delta
         """
-        text = ""
-        tool_use: Optional[ChatCompletionToolCallChunk] = None
-        provider_specific_fields = {}
-        content_block = ContentBlockDelta(**chunk)  # type: ignore
-        thinking_blocks: List[
-            Union[ChatCompletionThinkingBlock, ChatCompletionRedactedThinkingBlock]
-        ] = []
 
+        # Only create objects or vars if needed, minimize dict lookups
+        content_block = ContentBlockDelta(**chunk)  # type: ignore
         self.content_blocks.append(content_block)
-        if "text" in content_block["delta"]:
-            text = content_block["delta"]["text"]
-        elif "partial_json" in content_block["delta"]:
+        delta = content_block["delta"]
+
+        # Fast-path common cases with inlined logic, avoiding unneeded work
+        if "text" in delta:
+            # Only return the values needed (tuple order unchanged for interface guarantee)
+            return delta["text"], None, [], {}
+        if "partial_json" in delta:
             tool_use = {
                 "id": None,
                 "type": "function",
                 "function": {
                     "name": None,
-                    "arguments": content_block["delta"]["partial_json"],
+                    "arguments": delta["partial_json"],
                 },
                 "index": self.tool_index,
             }
-        elif "citation" in content_block["delta"]:
-            provider_specific_fields["citation"] = content_block["delta"]["citation"]
-        elif (
-            "thinking" in content_block["delta"]
-            or "signature" in content_block["delta"]
-        ):
+            return "", tool_use, [], {}
+        if "citation" in delta:
+            provider_specific_fields = {"citation": delta["citation"]}
+            return "", None, [], provider_specific_fields
+        if "thinking" in delta or "signature" in delta:
             thinking_blocks = [
                 ChatCompletionThinkingBlock(
                     type="thinking",
-                    thinking=content_block["delta"].get("thinking") or "",
-                    signature=content_block["delta"].get("signature"),
+                    thinking=delta.get("thinking") or "",
+                    signature=delta.get("signature"),
                 )
             ]
-            provider_specific_fields["thinking_blocks"] = thinking_blocks
+            provider_specific_fields = {"thinking_blocks": thinking_blocks}
+            return "", None, thinking_blocks, provider_specific_fields
 
-        return text, tool_use, thinking_blocks, provider_specific_fields
+        # Default return for empty delta (should not happen if upstream validates)
+        return "", None, [], {}
 
     def _handle_reasoning_content(
         self,
