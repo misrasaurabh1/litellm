@@ -1756,7 +1756,13 @@ def extract_between_tags(tag: str, string: str, strip: bool = False) -> List[str
 
 
 def contains_tag(tag: str, string: str) -> bool:
-    return bool(re.search(f"<{tag}>(.+?)</{tag}>", string, re.DOTALL))
+    open_tag = f"<{tag}>"
+    close_tag = f"</{tag}>"
+    start = string.find(open_tag)
+    if start == -1:
+        return False
+    end = string.find(close_tag, start + len(open_tag))
+    return end != -1 and end > start + len(open_tag)
 
 
 def parse_xml_params(xml_content, json_schema: Optional[dict] = None):
