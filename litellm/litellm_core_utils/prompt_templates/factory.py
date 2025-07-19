@@ -3770,44 +3770,54 @@ def custom_prompt(
     bos_token: str = "",
     eos_token: str = "",
 ) -> str:
-    prompt = bos_token + initial_prompt_value
-    bos_open = True
     ## a bos token is at the start of a system / human message
     ## an eos token is at the end of the assistant response to the message
+    parts = []
+    append = parts.append  # minor local speedup
+    has_bos = bool(bos_token or initial_prompt_value)
+    if bos_token or initial_prompt_value:
+        append(bos_token + initial_prompt_value)
+    bos_open = True
+    role_dict_get = role_dict.get
+
     for message in messages:
         role = message["role"]
+        is_system_or_human = (role == "system" or role == "human")
 
-        if role in ["system", "human"] and not bos_open:
-            prompt += bos_token
+        if is_system_or_human and not bos_open:
+            append(bos_token)
             bos_open = True
 
-        pre_message_str = (
-            role_dict[role]["pre_message"]
-            if role in role_dict and "pre_message" in role_dict[role]
-            else ""
-        )
-        post_message_str = (
-            role_dict[role]["post_message"]
-            if role in role_dict and "post_message" in role_dict[role]
-            else ""
-        )
-        if isinstance(message["content"], str):
-            prompt += pre_message_str + message["content"] + post_message_str
-        elif isinstance(message["content"], list):
-            text_str = ""
-            for content in message["content"]:
-                if content.get("text", None) is not None and isinstance(
-                    content["text"], str
-                ):
-                    text_str += content["text"]
-            prompt += pre_message_str + text_str + post_message_str
+        # Minimize dict lookups
+        role_spec = role_dict_get(role)
+        pre_message_str = ""
+        post_message_str = ""
+        if role_spec is not None:
+            pre_message_str = role_spec.get("pre_message", "")
+            post_message_str = role_spec.get("post_message", "")
+
+        content = message["content"]
+        if isinstance(content, str):
+            append(pre_message_str)
+            append(content)
+            append(post_message_str)
+        elif isinstance(content, list):
+            # Efficient list comprehension for text extraction and join
+            text_str = ''.join(
+                c["text"] for c in content
+                if c.get("text") is not None and isinstance(c["text"], str)
+            )
+            append(pre_message_str)
+            append(text_str)
+            append(post_message_str)
 
         if role == "assistant":
-            prompt += eos_token
+            append(eos_token)
             bos_open = False
 
-    prompt += final_prompt_value
-    return prompt
+    if final_prompt_value:
+        append(final_prompt_value)
+    return ''.join(parts)
 
 
 def prompt_factory(
