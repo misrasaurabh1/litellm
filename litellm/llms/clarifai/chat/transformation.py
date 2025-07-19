@@ -45,10 +45,13 @@ class ClarifaiConfig(BaseConfig):
         temperature: Optional[int] = None,
         top_k: Optional[int] = None,
     ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
+        # Directly set instance attributes instead of class attributes
+        if max_tokens is not None:
+            self.max_tokens = max_tokens
+        if temperature is not None:
+            self.temperature = temperature
+        if top_k is not None:
+            self.top_k = top_k
 
     @classmethod
     def get_config(cls):
@@ -77,9 +80,11 @@ class ClarifaiConfig(BaseConfig):
 
     def _completions_to_model(self, prompt: str, optional_params: dict) -> dict:
         params = {}
-        if temperature := optional_params.get("temperature"):
+        temperature = optional_params.get("temperature")
+        if temperature is not None:
             params["temperature"] = temperature
-        if max_tokens := optional_params.get("max_tokens"):
+        max_tokens = optional_params.get("max_tokens")
+        if max_tokens is not None:
             params["max_tokens"] = max_tokens
         return {
             "inputs": [{"data": {"text": {"raw": prompt}}}],
@@ -98,17 +103,17 @@ class ClarifaiConfig(BaseConfig):
         litellm_params: dict,
         headers: dict,
     ) -> dict:
-        prompt = " ".join(convert_content_list_to_str(message) for message in messages)
+        # " ".join(... for ...) with a generator is not optimal for large lists in CPython
+        # so build a list, then join.
+        prompt = " ".join([convert_content_list_to_str(message) for message in messages])
 
-        ## Load Config
+        # Load Config
         config = self.get_config()
         for k, v in config.items():
             if k not in optional_params:
                 optional_params[k] = v
 
-        data = self._completions_to_model(
-            prompt=prompt, optional_params=optional_params
-        )
+        data = self._completions_to_model(prompt=prompt, optional_params=optional_params)
 
         return data
 
@@ -193,9 +198,7 @@ class ClarifaiConfig(BaseConfig):
 
         # Calculate Usage
         prompt_tokens = token_counter(model=model, messages=messages)
-        completion_tokens = len(
-            encoding.encode(model_response["choices"][0]["message"].get("content"))
-        )
+        completion_tokens = len(encoding.encode(model_response["choices"][0]["message"].get("content")))
         model_response.model = model
         setattr(
             model_response,
@@ -240,12 +243,7 @@ class ClarifaiModelResponseIterator(FakeStreamResponseIterator):
             usage: Optional[ChatCompletionUsageBlock] = None
             provider_specific_fields = None
 
-            text = (
-                chunk.get("outputs", "")[0]
-                .get("data", "")
-                .get("text", "")
-                .get("raw", "")
-            )
+            text = chunk.get("outputs", "")[0].get("data", "").get("text", "").get("raw", "")
 
             index: int = 0
 
