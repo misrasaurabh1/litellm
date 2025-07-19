@@ -9,6 +9,9 @@ from httpx import Response
 import litellm
 from litellm import verbose_logger
 from litellm.caching.caching import InMemoryCache
+import litellm.types
+import litellm.types.llms
+from litellm.types.llms.anthropic import *
 
 MAX_IMGS_IN_MEMORY = 10
 
@@ -17,9 +20,7 @@ in_memory_cache = InMemoryCache(max_size_in_memory=MAX_IMGS_IN_MEMORY)
 
 def _process_image_response(response: Response, url: str) -> str:
     if response.status_code != 200:
-        raise Exception(
-            f"Error: Unable to fetch image from URL. Status code: {response.status_code}, url={url}"
-        )
+        raise Exception(f"Error: Unable to fetch image from URL. Status code: {response.status_code}, url={url}")
 
     image_bytes = response.content
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -59,25 +60,25 @@ async def async_convert_url_to_base64(url: str) -> str:
             return _process_image_response(response, url)
         except Exception:
             pass
-    raise Exception(
-        f"Error: Unable to fetch image from URL after 3 attempts. url={url}"
-    )
+    raise Exception(f"Error: Unable to fetch image from URL after 3 attempts. url={url}")
 
 
 def convert_url_to_base64(url: str) -> str:
+    # Fast path: image is already in cache
     cached_result = in_memory_cache.get_cache(url)
     if cached_result:
         return cached_result
 
     client = litellm.module_level_client
+    # Retry up to 3 times in case of transient HTTP errors
+    last_exception = None
     for _ in range(3):
         try:
             response = client.get(url, follow_redirects=True)
             return _process_image_response(response, url)
         except Exception as e:
+            # Use verbose_logger.exception(e)
             verbose_logger.exception(e)
-            # print(e)
-            pass
-    raise Exception(
-        f"Error: Unable to fetch image from URL after 3 attempts. url={url}"
-    )
+            last_exception = e
+    # Only raise after all retries failed
+    raise Exception(f"Error: Unable to fetch image from URL after 3 attempts. url={url}") from last_exception
