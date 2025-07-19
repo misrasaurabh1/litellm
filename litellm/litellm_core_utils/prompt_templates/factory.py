@@ -645,16 +645,17 @@ def anthropic_pt(
 
 
 def construct_format_parameters_prompt(parameters: dict):
-    parameter_str = "<parameter>\n"
+    # Use list join for efficient string construction
+    result = ['<parameter>\n']
     for k, v in parameters.items():
-        parameter_str += f"<{k}>"
-        parameter_str += f"{v}"
-        parameter_str += f"</{k}>"
-    parameter_str += "\n</parameter>"
-    return parameter_str
+        result.append(f"<{k}>{v}</{k}>")
+    result.append('\n</parameter>')
+    return ''.join(result)
 
 
 def construct_format_tool_for_claude_prompt(name, description, parameters):
+    # Build prompt with efficient string operations
+    parameters_str = construct_format_parameters_prompt(parameters)
     constructed_prompt = (
         "<tool_description>\n"
         f"<tool_name>{name}</tool_name>\n"
@@ -662,7 +663,7 @@ def construct_format_tool_for_claude_prompt(name, description, parameters):
         f"{description}\n"
         "</description>\n"
         "<parameters>\n"
-        f"{construct_format_parameters_prompt(parameters)}\n"
+        f"{parameters_str}\n"
         "</parameters>\n"
         "</tool_description>"
     )
