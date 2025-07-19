@@ -30,7 +30,7 @@ from litellm.llms.custom_httpx.http_handler import (
     get_async_httpx_client,
 )
 from litellm.types.llms.anthropic import (
-    ContentBlockDelta,
+    ContentBlockStartText, ContentBlockStartToolUse, ContentBlockDelta,
     ContentBlockStart,
     ContentBlockStop,
     MessageBlockDelta,
@@ -607,12 +607,8 @@ class ModelResponseIterator:
         return thinking_blocks, provider_specific_fields
 
     def get_content_block_start(self, chunk: dict) -> ContentBlockStart:
-        from litellm.types.llms.anthropic import (
-            ContentBlockStartText,
-            ContentBlockStartToolUse,
-        )
-
-        if chunk.get("content_block", {}).get("type") == "tool_use":
+        content_block = chunk.get("content_block", {})
+        if content_block.get("type") == "tool_use":
             content_block_start = ContentBlockStartToolUse(**chunk)  # type: ignore
         else:
             content_block_start = ContentBlockStartText(**chunk)  # type: ignore
