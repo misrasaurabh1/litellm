@@ -13,7 +13,7 @@ class MCPToolRegistry:
 
     def __init__(self):
         # Registry to store all registered tools
-        self.tools: Dict[str, MCPTool] = {}
+        self.tools = {}
 
     def register_tool(
         self,
@@ -45,9 +45,7 @@ class MCPToolRegistry:
         """
         return list(self.tools.values())
 
-    def load_tools_from_config(
-        self, mcp_tools_config: Optional[Dict[str, Any]] = None
-    ) -> None:
+    def load_tools_from_config(self, mcp_tools_config: Optional[Dict[str, Any]] = None) -> None:
         """
         Load and register tools from the proxy config
 
@@ -55,9 +53,7 @@ class MCPToolRegistry:
             mcp_tools_config: The mcp_tools config from the proxy config
         """
         if mcp_tools_config is None:
-            raise ValueError(
-                "mcp_tools_config is required, please set `mcp_tools` in your proxy config"
-            )
+            raise ValueError("mcp_tools_config is required, please set `mcp_tools` in your proxy config")
 
         for tool_config in mcp_tools_config:
             if not isinstance(tool_config, dict):
@@ -78,9 +74,7 @@ class MCPToolRegistry:
             handler = get_instance_fn(handler_name)
 
             if handler is None:
-                verbose_logger.warning(
-                    f"Warning: Could not find handler {handler_name} for tool {name}"
-                )
+                verbose_logger.warning(f"Warning: Could not find handler {handler_name} for tool {name}")
                 continue
 
             # Register the tool
@@ -95,9 +89,7 @@ class MCPToolRegistry:
                 input_schema=input_schema,
                 handler=handler,
             )
-        verbose_logger.debug(
-            "all registered tools: %s", json.dumps(self.tools, indent=4, default=str)
-        )
+        verbose_logger.debug("all registered tools: %s", json.dumps(self.tools, indent=4, default=str))
 
 
 global_mcp_tool_registry = MCPToolRegistry()
