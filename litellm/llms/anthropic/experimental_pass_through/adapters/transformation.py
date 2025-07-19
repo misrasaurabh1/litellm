@@ -416,13 +416,13 @@ class LiteLLMAnthropicMessagesAdapter:
     def _translate_openai_finish_reason_to_anthropic(
         self, openai_finish_reason: str
     ) -> AnthropicFinishReason:
-        if openai_finish_reason == "stop":
-            return "end_turn"
-        elif openai_finish_reason == "length":
-            return "max_tokens"
-        elif openai_finish_reason == "tool_calls":
-            return "tool_use"
-        return "end_turn"
+        # Use a dictionary for faster lookup instead of multiple if-elif
+        reason_map = {
+            "stop": "end_turn",
+            "length": "max_tokens",
+            "tool_calls": "tool_use"
+        }
+        return reason_map.get(openai_finish_reason, "end_turn")
 
     def translate_openai_response_to_anthropic(
         self, response: ModelResponse
@@ -485,47 +485,57 @@ class LiteLLMAnthropicMessagesAdapter:
         Literal["text_delta", "input_json_delta"],
         Union[ContentTextBlockDelta, ContentJsonBlockDelta],
     ]:
+        # Gather text deltas and partial_json efficiently
+        text_chunks = []
+        partial_json_chunks = []
+        found_partial_json = False
 
-        text: str = ""
-        partial_json: Optional[str] = None
         for choice in choices:
-            if choice.delta.content is not None:
-                text += choice.delta.content
-            elif choice.delta.tool_calls is not None:
-                partial_json = ""
-                for tool in choice.delta.tool_calls:
-                    if (
-                        tool.function is not None
-                        and tool.function.arguments is not None
-                    ):
-                        partial_json += tool.function.arguments
-
-        if partial_json is not None:
+            delta = choice.delta
+            content = delta.content
+            if content is not None:
+                text_chunks.append(content)
+            else:
+                tool_calls = delta.tool_calls
+                if tool_calls is not None:
+                    found_partial_json = True
+                    for tool in tool_calls:
+                        function = tool.function
+                        # function.arguments can be zero or more
+                        if function is not None:
+                            arguments = function.arguments
+                            if arguments is not None:
+                                partial_json_chunks.append(arguments)
+        if found_partial_json:
+            # Use join instead of += for efficient concatenation
+            partial_json = ''.join(partial_json_chunks)
             return "input_json_delta", ContentJsonBlockDelta(
                 type="input_json_delta", partial_json=partial_json
             )
         else:
+            text = ''.join(text_chunks)
             return "text_delta", ContentTextBlockDelta(type="text_delta", text=text)
 
     def translate_streaming_openai_response_to_anthropic(
         self, response: ModelResponse, current_content_block_index: int
     ) -> Union[ContentBlockDelta, MessageBlockDelta]:
         ## base case - final chunk w/ finish reason
-        if response.choices[0].finish_reason is not None:
+        response_choices = response.choices
+        first_choice = response_choices[0]
+
+        finish_reason = first_choice.finish_reason
+        if finish_reason is not None:
             delta = MessageDelta(
                 stop_reason=self._translate_openai_finish_reason_to_anthropic(
-                    response.choices[0].finish_reason
+                    finish_reason
                 ),
             )
-            if getattr(response, "usage", None) is not None:
-                litellm_usage_chunk: Optional[Usage] = response.usage  # type: ignore
-            elif (
-                hasattr(response, "_hidden_params")
-                and "usage" in response._hidden_params
-            ):
-                litellm_usage_chunk = response._hidden_params["usage"]
-            else:
-                litellm_usage_chunk = None
+            # Prefer getattr only once
+            litellm_usage_chunk: Optional[Usage] = getattr(response, "usage", None)
+            if litellm_usage_chunk is None:
+                _hidden_params = getattr(response, "_hidden_params", None)
+                if _hidden_params is not None and "usage" in _hidden_params:
+                    litellm_usage_chunk = _hidden_params["usage"]
             if litellm_usage_chunk is not None:
                 usage_delta = UsageDelta(
                     input_tokens=litellm_usage_chunk.prompt_tokens or 0,
@@ -536,11 +546,9 @@ class LiteLLMAnthropicMessagesAdapter:
             return MessageBlockDelta(
                 type="message_delta", delta=delta, usage=usage_delta
             )
-        (
-            type_of_content,
-            content_block_delta,
-        ) = self._translate_streaming_openai_chunk_to_anthropic(
-            choices=response.choices  # type: ignore
+
+        (type_of_content, content_block_delta) = self._translate_streaming_openai_chunk_to_anthropic(
+            choices=response_choices  # type: ignore
         )
         return ContentBlockDelta(
             type="content_block_delta",
