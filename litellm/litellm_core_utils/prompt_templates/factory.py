@@ -615,33 +615,38 @@ def ibm_granite_pt(messages: list):
 
 def anthropic_pt(
     messages: list,
-):  # format - https://docs.anthropic.com/claude/reference/complete_post
+):
     """
     You can "put words in Claude's mouth" by ending with an assistant message.
     See: https://docs.anthropic.com/claude/docs/put-words-in-claudes-mouth
     """
 
-    class AnthropicConstants(Enum):
-        HUMAN_PROMPT = "\n\nHuman: "
-        AI_PROMPT = "\n\nAssistant: "
+    prompt_parts = []
+    prepend_human = False
 
-    prompt = ""
-    for idx, message in enumerate(
-        messages
-    ):  # needs to start with `\n\nHuman: ` and end with `\n\nAssistant: `
-        if message["role"] == "user":
-            prompt += f"{AnthropicConstants.HUMAN_PROMPT.value}{message['content']}"
-        elif message["role"] == "system":
-            prompt += f"{AnthropicConstants.HUMAN_PROMPT.value}<admin>{message['content']}</admin>"
+    # Loop through messages, building prompt quickly
+    for idx, message in enumerate(messages):
+        role = message["role"]
+        content = message["content"]
+
+        if role == "user":
+            prompt_parts.append(f"{HUMAN_PROMPT}{content}")
+        elif role == "system":
+            prompt_parts.append(f"{HUMAN_PROMPT}<admin>{content}</admin>")
         else:
-            prompt += f"{AnthropicConstants.AI_PROMPT.value}{message['content']}"
-        if (
-            idx == 0 and message["role"] == "assistant"
-        ):  # ensure the prompt always starts with `\n\nHuman: `
-            prompt = f"{AnthropicConstants.HUMAN_PROMPT.value}" + prompt
+            prompt_parts.append(f"{AI_PROMPT}{content}")
+
+        # Check if the first message is 'assistant'
+        if idx == 0 and role == "assistant":
+            prepend_human = True
+
+    if prepend_human:
+        prompt_parts.insert(0, HUMAN_PROMPT)
+
     if messages[-1]["role"] != "assistant":
-        prompt += f"{AnthropicConstants.AI_PROMPT.value}"
-    return prompt
+        prompt_parts.append(AI_PROMPT)
+
+    return "".join(prompt_parts)
 
 
 def construct_format_parameters_prompt(parameters: dict):
@@ -3953,3 +3958,7 @@ def get_attribute_or_key(tool_or_function, attribute, default=None):
     if hasattr(tool_or_function, attribute):
         return getattr(tool_or_function, attribute)
     return tool_or_function.get(attribute, default)
+
+HUMAN_PROMPT = "\n\nHuman: "
+
+AI_PROMPT = "\n\nAssistant: "
