@@ -311,16 +311,20 @@ def falcon_instruct_pt(messages):
 
 
 def falcon_chat_pt(messages):
-    prompt = ""
-    for message in messages:
-        if message["role"] == "system":
-            prompt += "System: " + message["content"]
-        elif message["role"] == "assistant":
-            prompt += "Falcon: " + message["content"]
-        elif message["role"] == "user":
-            prompt += "User: " + message["content"]
+    role_prefix = {
+        "system": "System: ",
+        "assistant": "Falcon: ",
+        "user": "User: "
+    }
 
-    return prompt
+    # Build list of strings for efficient concatenation
+    parts = []
+    for message in messages:
+        prefix = role_prefix.get(message["role"])
+        if prefix is not None:
+            parts.append(prefix)
+            parts.append(message["content"])
+    return ''.join(parts)
 
 
 # MPT prompt template - from https://github.com/lm-sys/FastChat/blob/main/fastchat/conversation.py#L110
