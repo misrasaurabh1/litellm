@@ -28,6 +28,9 @@ from litellm.llms.custom_httpx.http_handler import (
 )
 
 from .base import OpenAIGuardrailBase
+from litellm.types.guardrails import GuardrailEventHooks
+from litellm.types.proxy.guardrails.guardrail_hooks.base import GuardrailConfigModel
+from litellm.types.proxy.guardrails.guardrail_hooks.openai.openai_moderation import OpenAIModerationGuardrailConfigModel
 
 if TYPE_CHECKING:
     from litellm.proxy._types import UserAPIKeyAuth
@@ -60,28 +63,30 @@ class OpenAIModerationGuardrail(OpenAIGuardrailBase, CustomGuardrail):
         **kwargs,
     ):
         """Initialize OpenAI Moderation guardrail handler."""
-        from litellm.types.guardrails import GuardrailEventHooks
 
-        # Initialize parent CustomGuardrail
-        supported_event_hooks = [
-            GuardrailEventHooks.pre_call,
-            GuardrailEventHooks.during_call,
-            GuardrailEventHooks.post_call,
-        ]
+        # Initialize parent CustomGuardrail only once
         super().__init__(
             guardrail_name=guardrail_name,
-            supported_event_hooks=supported_event_hooks,
+            supported_event_hooks=[
+                GuardrailEventHooks.pre_call,
+                GuardrailEventHooks.during_call,
+                GuardrailEventHooks.post_call,
+            ],
             **kwargs,
         )
         
+        # Get async HTTPX client for GuardrailCallback
         self.async_handler = get_async_httpx_client(
             llm_provider=httpxSpecialProvider.GuardrailCallback
         )
 
         # Store configuration
-        self.api_key = api_key or self._get_api_key()
-        self.api_base = api_base or "https://api.openai.com/v1"
-        self.model: Literal["omni-moderation-latest", "text-moderation-latest"] = model or "omni-moderation-latest"
+        if api_key is None:
+            api_key = self._get_api_key()
+        self.api_key = api_key
+
+        self.api_base = api_base if api_base else "https://api.openai.com/v1"
+        self.model = model if model else "omni-moderation-latest"
 
         if not self.api_key:
             raise ValueError("OpenAI Moderation: api_key is required. Set OPENAI_API_KEY environment variable or pass it in configuration.")
@@ -424,8 +429,4 @@ class OpenAIModerationGuardrail(OpenAIGuardrailBase, CustomGuardrail):
         """
         Get the config model for the OpenAI Moderation guardrail.
         """
-        from litellm.types.proxy.guardrails.guardrail_hooks.openai.openai_moderation import (
-            OpenAIModerationGuardrailConfigModel,
-        )
-
         return OpenAIModerationGuardrailConfigModel
