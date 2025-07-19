@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+import litellm
 from litellm.types.guardrails import SupportedGuardrailIntegrations
 
 from .guardrails_ai import GuardrailsAI
@@ -9,9 +10,9 @@ if TYPE_CHECKING:
 
 
 def initialize_guardrail(litellm_params: "LitellmParams", guardrail: "Guardrail"):
-    import litellm
-
-    if litellm_params.guard_name is None:
+    # Remove repeated import & use fast attribute access
+    guard_name = litellm_params.guard_name
+    if guard_name is None:
         raise Exception(
             "GuardrailsAIException - Please pass the Guardrails AI guard name via 'litellm_params::guard_name'"
         )
@@ -22,10 +23,10 @@ def initialize_guardrail(litellm_params: "LitellmParams", guardrail: "Guardrail"
         guardrail_name=guardrail.get("guardrail_name", ""),
         event_hook=litellm_params.mode,
         default_on=litellm_params.default_on,
-        guard_name=litellm_params.guard_name,
+        guard_name=guard_name,
     )
+    # Direct fast reference
     litellm.logging_callback_manager.add_litellm_callback(_guardrails_ai_callback)
-
     return _guardrails_ai_callback
 
 
