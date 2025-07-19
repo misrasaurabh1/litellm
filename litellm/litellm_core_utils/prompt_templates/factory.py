@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Union, Any, List, Optional, Tuple, cast, overload
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -1120,28 +1120,29 @@ def convert_to_gemini_tool_call_result(
         "content": "function result goes here",
     }
     """
-    content_str: str = ""
-    if isinstance(message["content"], str):
-        content_str = message["content"]
-    elif isinstance(message["content"], List):
-        content_list = message["content"]
-        for content in content_list:
-            if content["type"] == "text":
-                content_str += content["text"]
+    content = message["content"]
+
+    if isinstance(content, str):
+        content_str: str = content
+    elif isinstance(content, list):
+        # String concat in loop is O(n^2); collect and join instead
+        texts = [c["text"] for c in content if c.get("type") == "text"]
+        content_str = "".join(texts)
+    else:
+        content_str = ""
+
     name: Optional[str] = message.get("name", "")  # type: ignore
 
     # Recover name from last message with tool calls
-    if last_message_with_tool_calls:
+    if not name and last_message_with_tool_calls:
         tools = last_message_with_tool_calls.get("tool_calls", [])
         msg_tool_call_id = message.get("tool_call_id", None)
-        for tool in tools:
-            prev_tool_call_id = tool.get("id", None)
-            if (
-                msg_tool_call_id
-                and prev_tool_call_id
-                and msg_tool_call_id == prev_tool_call_id
-            ):
-                name = tool.get("function", {}).get("name", "")
+        if msg_tool_call_id:
+            # Tool_call_id is not None; scan only if this is set
+            for tool in tools:
+                if tool.get("id") == msg_tool_call_id:
+                    name = tool.get("function", {}).get("name", "")
+                    break
 
     if not name:
         raise Exception(
