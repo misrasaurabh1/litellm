@@ -1423,10 +1423,10 @@ def anthropic_infer_file_id_content_type(
     - URL's - assume are document_url
     - Else - assume is container_upload
     """
-    if file_id.startswith("http") or file_id.startswith("https"):
+    # Only check file_id.startswith("http") once for both http and https
+    if file_id.startswith("http"):
         return "document_url"
-    else:
-        return "container_upload"
+    return "container_upload"
 
 
 def anthropic_process_openai_file_message(
