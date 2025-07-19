@@ -45,10 +45,13 @@ class ClarifaiConfig(BaseConfig):
         temperature: Optional[int] = None,
         top_k: Optional[int] = None,
     ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
+        # Set attributes directly for only those provided, as instance attributes
+        if max_tokens is not None:
+            self.max_tokens = max_tokens
+        if temperature is not None:
+            self.temperature = temperature
+        if top_k is not None:
+            self.top_k = top_k
 
     @classmethod
     def get_config(cls):
@@ -67,11 +70,11 @@ class ClarifaiConfig(BaseConfig):
         model: str,
         drop_params: bool,
     ) -> dict:
-        for param, value in non_default_params.items():
-            if param == "temperature":
-                optional_params["temperature"] = value
-            elif param == "max_tokens":
-                optional_params["max_tokens"] = value
+        # Set 'temperature' and 'max_tokens' keys directly for fast assignment
+        if "temperature" in non_default_params:
+            optional_params["temperature"] = non_default_params["temperature"]
+        if "max_tokens" in non_default_params:
+            optional_params["max_tokens"] = non_default_params["max_tokens"]
 
         return optional_params
 
@@ -106,9 +109,7 @@ class ClarifaiConfig(BaseConfig):
             if k not in optional_params:
                 optional_params[k] = v
 
-        data = self._completions_to_model(
-            prompt=prompt, optional_params=optional_params
-        )
+        data = self._completions_to_model(prompt=prompt, optional_params=optional_params)
 
         return data
 
@@ -193,9 +194,7 @@ class ClarifaiConfig(BaseConfig):
 
         # Calculate Usage
         prompt_tokens = token_counter(model=model, messages=messages)
-        completion_tokens = len(
-            encoding.encode(model_response["choices"][0]["message"].get("content"))
-        )
+        completion_tokens = len(encoding.encode(model_response["choices"][0]["message"].get("content")))
         model_response.model = model
         setattr(
             model_response,
@@ -240,12 +239,7 @@ class ClarifaiModelResponseIterator(FakeStreamResponseIterator):
             usage: Optional[ChatCompletionUsageBlock] = None
             provider_specific_fields = None
 
-            text = (
-                chunk.get("outputs", "")[0]
-                .get("data", "")
-                .get("text", "")
-                .get("raw", "")
-            )
+            text = chunk.get("outputs", "")[0].get("data", "").get("text", "").get("raw", "")
 
             index: int = 0
 
