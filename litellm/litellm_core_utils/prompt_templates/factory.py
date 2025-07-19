@@ -645,13 +645,11 @@ def anthropic_pt(
 
 
 def construct_format_parameters_prompt(parameters: dict):
-    parameter_str = "<parameter>\n"
+    parameter_parts = ["<parameter>\n"]
     for k, v in parameters.items():
-        parameter_str += f"<{k}>"
-        parameter_str += f"{v}"
-        parameter_str += f"</{k}>"
-    parameter_str += "\n</parameter>"
-    return parameter_str
+        parameter_parts.append(f"<{k}>{v}</{k}>")
+    parameter_parts.append("\n</parameter>")
+    return ''.join(parameter_parts)
 
 
 def construct_format_tool_for_claude_prompt(name, description, parameters):
