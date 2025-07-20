@@ -197,10 +197,27 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         presence_penalty: Optional[float] = None,
         seed: Optional[int] = None,
     ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
+        # Store the attributes on the instance, not the class, and only if provided
+        if temperature is not None:
+            self.temperature = temperature
+        if max_output_tokens is not None:
+            self.max_output_tokens = max_output_tokens
+        if top_p is not None:
+            self.top_p = top_p
+        if top_k is not None:
+            self.top_k = top_k
+        if response_mime_type is not None:
+            self.response_mime_type = response_mime_type
+        if candidate_count is not None:
+            self.candidate_count = candidate_count
+        if stop_sequences is not None:
+            self.stop_sequences = stop_sequences
+        if frequency_penalty is not None:
+            self.frequency_penalty = frequency_penalty
+        if presence_penalty is not None:
+            self.presence_penalty = presence_penalty
+        if seed is not None:
+            self.seed = seed
 
     @classmethod
     def get_config(cls):
@@ -738,12 +755,14 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         }
 
     def translate_exception_str(self, exception_string: str):
-        if (
+        # Fast str lookup, short-circuit if not likely present
+        msg = (
             "GenerateContentRequest.tools[0].function_declarations[0].parameters.properties: should be non-empty for OBJECT type"
-            in exception_string
-        ):
-            return "'properties' field in tools[0]['function']['parameters'] cannot be empty if 'type' == 'object'. Received error from provider - {}".format(
-                exception_string
+        )
+        if msg in exception_string:
+            return (
+                "'properties' field in tools[0]['function']['parameters'] cannot be empty if 'type' == 'object'. "
+                f"Received error from provider - {exception_string}"
             )
         return exception_string
 
