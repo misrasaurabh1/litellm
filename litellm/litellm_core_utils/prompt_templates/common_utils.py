@@ -38,13 +38,9 @@ from litellm.types.utils import (
 if TYPE_CHECKING:  # newer pattern to avoid importing pydantic objects on __init__.py
     from litellm.types.llms.openai import ChatCompletionImageObject
 
-DEFAULT_USER_CONTINUE_MESSAGE = ChatCompletionUserMessage(
-    content="Please continue.", role="user"
-)
+DEFAULT_USER_CONTINUE_MESSAGE = ChatCompletionUserMessage(content="Please continue.", role="user")
 
-DEFAULT_ASSISTANT_CONTINUE_MESSAGE = ChatCompletionAssistantMessage(
-    content="Please continue.", role="assistant"
-)
+DEFAULT_ASSISTANT_CONTINUE_MESSAGE = ChatCompletionAssistantMessage(content="Please continue.", role="assistant")
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as LoggingClass
@@ -124,18 +120,12 @@ def convert_content_list_to_str(
 
     Motivation: mistral api + azure ai don't support content as a list
     """
-    texts = ""
     message_content = message.get("content")
-    if message_content:
-        if message_content is not None and isinstance(message_content, list):
-            for c in message_content:
-                text_content = c.get("text")
-                if text_content:
-                    texts += text_content
-        elif message_content is not None and isinstance(message_content, str):
-            texts = message_content
-
-    return texts
+    if isinstance(message_content, list):
+        return "".join(c.get("text", "") for c in message_content if c.get("text"))
+    elif isinstance(message_content, str):
+        return message_content
+    return ""
 
 
 def get_str_from_messages(messages: List[AllMessageValues]) -> str:
@@ -150,9 +140,7 @@ def get_str_from_messages(messages: List[AllMessageValues]) -> str:
 
 def is_non_content_values_set(message: AllMessageValues) -> bool:
     ignore_keys = ["content", "role", "name"]
-    return any(
-        message.get(key, None) is not None for key in message if key not in ignore_keys
-    )
+    return any(message.get(key, None) is not None for key in message if key not in ignore_keys)
 
 
 def _audio_or_image_in_message_content(message: AllMessageValues) -> bool:
@@ -180,13 +168,9 @@ def convert_openai_message_to_only_content_messages(
     user_roles = ["user", "tool", "function"]
     for message in messages:
         if message.get("role") in user_roles:
-            converted_messages.append(
-                {"role": "user", "content": convert_content_list_to_str(message)}
-            )
+            converted_messages.append({"role": "user", "content": convert_content_list_to_str(message)})
         elif message.get("role") == "assistant":
-            converted_messages.append(
-                {"role": "assistant", "content": convert_content_list_to_str(message)}
-            )
+            converted_messages.append({"role": "assistant", "content": convert_content_list_to_str(message)})
     return converted_messages
 
 
@@ -319,9 +303,7 @@ def _insert_assistant_continue_message(
             and messages[i + 1].get("role") == "user"
         ):  # Next is user
             # Insert assistant message
-            continue_message = (
-                assistant_continue_message or DEFAULT_ASSISTANT_CONTINUE_MESSAGE
-            )
+            continue_message = assistant_continue_message or DEFAULT_ASSISTANT_CONTINUE_MESSAGE
             modified_messages.append(continue_message)
 
     return modified_messages
@@ -344,14 +326,10 @@ def get_completion_messages(
         return messages.copy()
 
     ## INSERT USER CONTINUE MESSAGE
-    messages = _insert_user_continue_message(
-        messages, user_continue_message, ensure_alternating_roles
-    )
+    messages = _insert_user_continue_message(messages, user_continue_message, ensure_alternating_roles)
 
     ## INSERT ASSISTANT CONTINUE MESSAGE
-    messages = _insert_assistant_continue_message(
-        messages, assistant_continue_message, ensure_alternating_roles
-    )
+    messages = _insert_assistant_continue_message(messages, assistant_continue_message, ensure_alternating_roles)
     return messages
 
 
@@ -370,9 +348,7 @@ def get_format_from_file_id(file_id: Optional[str]) -> Optional[str]:
         return None
     try:
         transformed_file_id = convert_b64_uid_to_unified_uid(file_id)
-        if transformed_file_id.startswith(
-            SpecialEnums.LITELM_MANAGED_FILE_ID_PREFIX.value
-        ):
+        if transformed_file_id.startswith(SpecialEnums.LITELM_MANAGED_FILE_ID_PREFIX.value):
             match = re.match(
                 f"{SpecialEnums.LITELM_MANAGED_FILE_ID_PREFIX.value}:(.*?);unified_id",
                 transformed_file_id,
@@ -411,15 +387,10 @@ def update_messages_with_model_file_ids(
                         file_object = cast(ChatCompletionFileObject, c)
                         file_object_file_field = file_object["file"]
                         file_id = file_object_file_field.get("file_id")
-                        format = file_object_file_field.get(
-                            "format", get_format_from_file_id(file_id)
-                        )
+                        format = file_object_file_field.get("format", get_format_from_file_id(file_id))
 
                         if file_id:
-                            provider_file_id = (
-                                model_file_id_mapping.get(file_id, {}).get(model_id)
-                                or file_id
-                            )
+                            provider_file_id = model_file_id_mapping.get(file_id, {}).get(model_id) or file_id
                             file_object_file_field["file_id"] = provider_file_id
                         if format:
                             file_object_file_field["format"] = format
@@ -475,11 +446,7 @@ def extract_file_data(file_data: FileTypes) -> ExtractedFileData:
 
     # Use provided content type or guess based on filename
     if not content_type:
-        content_type = (
-            mimetypes.guess_type(filename)[0]
-            if filename
-            else "application/octet-stream"
-        )
+        content_type = mimetypes.guess_type(filename)[0] if filename else "application/octet-stream"
 
     return ExtractedFileData(
         filename=filename,
@@ -520,9 +487,9 @@ def unpack_defs(schema: dict, defs: dict) -> None:
 
     # Use iterative approach with queue to avoid recursion
     # Each item in queue is (node, parent_container, key/index, active_defs, seen_ids)
-    queue: deque[
-        tuple[Any, Union[dict, list, None], Union[str, int, None], dict, set]
-    ] = deque([(schema, None, None, root_defs, set())])
+    queue: deque[tuple[Any, Union[dict, list, None], Union[str, int, None], dict, set]] = deque(
+        [(schema, None, None, root_defs, set())]
+    )
 
     while queue:
         node, parent, key, active_defs, seen = queue.popleft()
@@ -692,9 +659,7 @@ def check_is_function_call(logging_obj: "LoggingClass") -> bool:
         is_function_call,
     )
 
-    if hasattr(logging_obj, "optional_params") and isinstance(
-        logging_obj.optional_params, dict
-    ):
+    if hasattr(logging_obj, "optional_params") and isinstance(logging_obj.optional_params, dict):
         if is_function_call(logging_obj.optional_params):
             return True
 
@@ -797,9 +762,7 @@ def get_last_user_message(messages: List[AllMessageValues]) -> Optional[str]:
     return result if result else None
 
 
-def set_last_user_message(
-    messages: List[AllMessageValues], content: str
-) -> List[AllMessageValues]:
+def set_last_user_message(messages: List[AllMessageValues], content: str) -> List[AllMessageValues]:
     """
     Set the last user message
 
@@ -814,11 +777,7 @@ def set_last_user_message(
             # Stop when we hit a non-user message
             break
     if idx_to_remove:
-        messages = [
-            message
-            for idx, message in enumerate(reversed(messages))
-            if idx not in idx_to_remove
-        ]
+        messages = [message for idx, message in enumerate(reversed(messages)) if idx not in idx_to_remove]
         messages.reverse()
     messages.append({"role": "user", "content": content})
     return messages

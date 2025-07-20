@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Union, Any, List, Optional, Tuple, cast, overload
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -2822,12 +2822,12 @@ def return_assistant_continue_message(
         Union[str, ChatCompletionAssistantMessage]
     ] = None,
 ) -> ChatCompletionAssistantMessage:
-    if assistant_continue_message and isinstance(assistant_continue_message, str):
+    if isinstance(assistant_continue_message, str):
         return ChatCompletionAssistantMessage(
             role="assistant",
             content=assistant_continue_message,
         )
-    elif assistant_continue_message and isinstance(assistant_continue_message, dict):
+    elif isinstance(assistant_continue_message, dict):
         return ChatCompletionAssistantMessage(**assistant_continue_message)
     else:
         return DEFAULT_ASSISTANT_CONTINUE_MESSAGE
@@ -2920,36 +2920,34 @@ def process_empty_text_blocks(
     ] = None,
 ) -> ChatCompletionAssistantMessage:
     modified_content_block = message.get("content", None)
-    ## BASE CASE ##
-    if modified_content_block is None or not isinstance(modified_content_block, list):
+    if not isinstance(modified_content_block, list):
         return message
 
-    # Check if all items are empty text blocks
-    if all(
-        item["type"] == "text" and not item["text"].strip()
-        for item in modified_content_block
-    ):
-        # Replace with a single continue message
-        _assistant_continue_message = return_assistant_continue_message(
-            assistant_continue_message
-        )
-        modified_content_block = [
-            {
-                "type": "text",
-                "text": convert_content_list_to_str(_assistant_continue_message),
-            }
-        ]
-    else:
-        # Filter out only empty text blocks, keeping non-empty text and other block types
-        modified_content_block = [
-            item
-            for item in modified_content_block
-            if not (item["type"] == "text" and not item["text"].strip())
-        ]
+    # Fast path for all empty text blocks
+    all_empty = True
+    for item in modified_content_block:
+        if item["type"] != "text" or item["text"].strip():
+            all_empty = False
+            break
+    if all_empty:
+        _assistant_continue_message = return_assistant_continue_message(assistant_continue_message)
+        new_content = [{
+            "type": "text",
+            "text": convert_content_list_to_str(_assistant_continue_message),
+        }]
+        modified_message = message.copy()
+        modified_message["content"] = new_content
+        return modified_message
 
-    modified_message = message.copy()
-    modified_message["content"] = modified_content_block
-    return modified_message
+    # Filter only empty text blocks, keep non-empty text and others
+    new_content = [item for item in modified_content_block if not (item["type"] == "text" and not item["text"].strip())]
+
+    # Only make a copy if content was changed
+    if len(new_content) != len(modified_content_block):
+        modified_message = message.copy()
+        modified_message["content"] = new_content
+        return modified_message
+    return message
 
 
 def get_assistant_message_block_or_continue_message(
