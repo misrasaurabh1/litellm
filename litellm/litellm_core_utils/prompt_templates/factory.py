@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Union, Any, List, Optional, Tuple, cast
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -2822,15 +2822,12 @@ def return_assistant_continue_message(
         Union[str, ChatCompletionAssistantMessage]
     ] = None,
 ) -> ChatCompletionAssistantMessage:
-    if assistant_continue_message and isinstance(assistant_continue_message, str):
-        return ChatCompletionAssistantMessage(
-            role="assistant",
-            content=assistant_continue_message,
-        )
-    elif assistant_continue_message and isinstance(assistant_continue_message, dict):
-        return ChatCompletionAssistantMessage(**assistant_continue_message)
-    else:
-        return DEFAULT_ASSISTANT_CONTINUE_MESSAGE
+    if assistant_continue_message:
+        if isinstance(assistant_continue_message, str):
+            return ChatCompletionAssistantMessage(role="assistant", content=assistant_continue_message)
+        elif isinstance(assistant_continue_message, dict):
+            return ChatCompletionAssistantMessage(**assistant_continue_message)
+    return DEFAULT_ASSISTANT_CONTINUE_MESSAGE
 
 
 def _skip_empty_dict_blocks(blocks: List[dict]) -> List[dict]:
@@ -2850,18 +2847,98 @@ def _skip_empty_dict_blocks(blocks: List[dict]) -> List[dict]:
     ]
 
 
-@overload
 def skip_empty_text_blocks(
     message: ChatCompletionAssistantMessage,
 ) -> ChatCompletionAssistantMessage:
-    pass
+    """
+    Skips empty text blocks in message content text blocks.
+
+    Do not insert content here. This is a helper function, which can also be used in base case.
+    """
+    content_block = message.get("content", None)
+    if content_block is None:
+        return message
+    role = message.get("role")  # for repeated use 
+
+    # Special case: empty string block on assistant (rare, 'user' cannot become None)
+    if (
+        isinstance(content_block, str) and not content_block.strip() 
+        and role == "assistant" and is_non_content_values_set(message)
+    ):
+        modified_message = message.copy()
+        modified_message["content"] = None
+        return modified_message
+
+    if isinstance(content_block, list):
+        # Inline _skip_empty_dict_blocks logic for speed & profile
+        filtered = [item for item in content_block if not (item.get("type") == "text" and not item.get("text", "").strip())]
+
+        # If nothing left and assistant, convert to None 
+        if not filtered and role == "assistant":
+            modified_message = message.copy()
+            modified_message["content"] = None
+            return modified_message
+
+        # Only create modified dict if values actually changed
+        if filtered is content_block:
+            return message
+
+        modified_message = message.copy()
+        # Only two possible precise castings needed
+        if role == "assistant":
+            modified_message["content"] = filtered or None  # type: ignore
+        elif role == "user":
+            modified_message["content"] = filtered  # type: ignore
+        return modified_message
+
+    return message
 
 
-@overload
 def skip_empty_text_blocks(
     message: ChatCompletionUserMessage,
 ) -> ChatCompletionUserMessage:
-    pass
+    """
+    Skips empty text blocks in message content text blocks.
+
+    Do not insert content here. This is a helper function, which can also be used in base case.
+    """
+    content_block = message.get("content", None)
+    if content_block is None:
+        return message
+    role = message.get("role")  # for repeated use 
+
+    # Special case: empty string block on assistant (rare, 'user' cannot become None)
+    if (
+        isinstance(content_block, str) and not content_block.strip() 
+        and role == "assistant" and is_non_content_values_set(message)
+    ):
+        modified_message = message.copy()
+        modified_message["content"] = None
+        return modified_message
+
+    if isinstance(content_block, list):
+        # Inline _skip_empty_dict_blocks logic for speed & profile
+        filtered = [item for item in content_block if not (item.get("type") == "text" and not item.get("text", "").strip())]
+
+        # If nothing left and assistant, convert to None 
+        if not filtered and role == "assistant":
+            modified_message = message.copy()
+            modified_message["content"] = None
+            return modified_message
+
+        # Only create modified dict if values actually changed
+        if filtered is content_block:
+            return message
+
+        modified_message = message.copy()
+        # Only two possible precise castings needed
+        if role == "assistant":
+            modified_message["content"] = filtered or None  # type: ignore
+        elif role == "user":
+            modified_message["content"] = filtered  # type: ignore
+        return modified_message
+
+    return message
 
 
 def skip_empty_text_blocks(
@@ -2875,40 +2952,38 @@ def skip_empty_text_blocks(
     content_block = message.get("content", None)
     if content_block is None:
         return message
+    role = message.get("role")  # for repeated use 
+
+    # Special case: empty string block on assistant (rare, 'user' cannot become None)
     if (
-        isinstance(content_block, str)
-        and not content_block.strip()
-        and is_non_content_values_set(message)
-        and message["role"] == "assistant"
+        isinstance(content_block, str) and not content_block.strip() 
+        and role == "assistant" and is_non_content_values_set(message)
     ):
         modified_message = message.copy()
-        modified_message["content"] = None  # user message content cannot be None
+        modified_message["content"] = None
         return modified_message
-    elif isinstance(content_block, list):
-        modified_content_block = _skip_empty_dict_blocks(
-            cast(List[dict], content_block)
-        )
 
-        # If no content remains and it's an assistant message, set content to None
-        if not modified_content_block and message["role"] == "assistant":
+    if isinstance(content_block, list):
+        # Inline _skip_empty_dict_blocks logic for speed & profile
+        filtered = [item for item in content_block if not (item.get("type") == "text" and not item.get("text", "").strip())]
+
+        # If nothing left and assistant, convert to None 
+        if not filtered and role == "assistant":
             modified_message = message.copy()
             modified_message["content"] = None
             return modified_message
 
-        modified_message_alt = message.copy()
+        # Only create modified dict if values actually changed
+        if filtered is content_block:
+            return message
 
-        # Type-specific casting based on message role
-        if message["role"] == "assistant":
-            modified_message_alt["content"] = cast(  # type: ignore
-                Optional[List[OpenAIMessageContentListBlock]],
-                modified_content_block or None,
-            )
-        elif message["role"] == "user" and modified_content_block is not None:
-            modified_message_alt["content"] = cast(  # type: ignore
-                Optional[List[ChatCompletionTextObject]], modified_content_block
-            )
-
-        return modified_message_alt
+        modified_message = message.copy()
+        # Only two possible precise castings needed
+        if role == "assistant":
+            modified_message["content"] = filtered or None  # type: ignore
+        elif role == "user":
+            modified_message["content"] = filtered  # type: ignore
+        return modified_message
 
     return message
 
@@ -2919,36 +2994,32 @@ def process_empty_text_blocks(
         Union[str, ChatCompletionAssistantMessage]
     ] = None,
 ) -> ChatCompletionAssistantMessage:
-    modified_content_block = message.get("content", None)
-    ## BASE CASE ##
-    if modified_content_block is None or not isinstance(modified_content_block, list):
+    content_block = message.get("content", None)
+    # BASE CASE
+    if content_block is None or not isinstance(content_block, list):
         return message
 
-    # Check if all items are empty text blocks
-    if all(
-        item["type"] == "text" and not item["text"].strip()
-        for item in modified_content_block
-    ):
+    # Check if all are empty text blocks, using an optimized for-loop rather than all()
+    all_empty = True
+    for item in content_block:
+        if item["type"] != "text" or item["text"].strip():
+            all_empty = False
+            break
+
+    if all_empty:
         # Replace with a single continue message
-        _assistant_continue_message = return_assistant_continue_message(
-            assistant_continue_message
-        )
-        modified_content_block = [
-            {
-                "type": "text",
-                "text": convert_content_list_to_str(_assistant_continue_message),
-            }
-        ]
+        _assistant = return_assistant_continue_message(assistant_continue_message)
+        content_block = [{
+            "type": "text",
+            "text": convert_content_list_to_str(_assistant),
+        }]
     else:
-        # Filter out only empty text blocks, keeping non-empty text and other block types
-        modified_content_block = [
-            item
-            for item in modified_content_block
-            if not (item["type"] == "text" and not item["text"].strip())
-        ]
+        # Remove empty text blocks in-place for better memory
+        filtered = [item for item in content_block if not (item["type"] == "text" and not item["text"].strip())]
+        content_block = filtered
 
     modified_message = message.copy()
-    modified_message["content"] = modified_content_block
+    modified_message["content"] = content_block
     return modified_message
 
 
@@ -2966,40 +3037,24 @@ def get_assistant_message_block_or_continue_message(
     """
     content_block = message.get("content", None)
 
-    # Handle Base case
-    if content_block is None or (
-        assistant_continue_message is None and litellm.modify_params is False
-    ):
+    # Fast path: fallback if assistant_continue_message is unset and modifying params is off
+    if content_block is None or (assistant_continue_message is None and not getattr(litellm, "modify_params", False)):
         return skip_empty_text_blocks(message=message)
 
-    # Handle string case
     if isinstance(content_block, str):
-        # check if content is empty
         if content_block.strip():
             return message
-        else:
-            if is_non_content_values_set(message):
-                modified_message = message.copy()
-                modified_message["content"] = None
-                return modified_message
-            return return_assistant_continue_message(assistant_continue_message)
+        # Empty string
+        if is_non_content_values_set(message):
+            modified_message = message.copy()
+            modified_message["content"] = None
+            return modified_message
+        return return_assistant_continue_message(assistant_continue_message)
 
-    # Handle list case
     if isinstance(content_block, list):
-        """
-        CHECK FOR
-            "content": [
-                {
-                "type": "text",
-                "text": ""
-                }
-            ],
-        """
-        return process_empty_text_blocks(
-            message=message, assistant_continue_message=assistant_continue_message
-        )
+        return process_empty_text_blocks(message=message, assistant_continue_message=assistant_continue_message)
 
-    # Handle unsupported type
+    # Fallback error
     raise ValueError(f"Unsupported content type: {type(content_block)}")
 
 
@@ -3953,3 +4008,5 @@ def get_attribute_or_key(tool_or_function, attribute, default=None):
     if hasattr(tool_or_function, attribute):
         return getattr(tool_or_function, attribute)
     return tool_or_function.get(attribute, default)
+
+_IGNORE_KEYS_SET = {"content", "role", "name"}

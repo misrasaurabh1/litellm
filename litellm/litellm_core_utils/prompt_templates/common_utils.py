@@ -34,6 +34,7 @@ from litellm.types.utils import (
     SpecialEnums,
     StreamingChoices,
 )
+from litellm.types.llms.anthropic import *
 
 if TYPE_CHECKING:  # newer pattern to avoid importing pydantic objects on __init__.py
     from litellm.types.llms.openai import ChatCompletionImageObject
@@ -149,10 +150,11 @@ def get_str_from_messages(messages: List[AllMessageValues]) -> str:
 
 
 def is_non_content_values_set(message: AllMessageValues) -> bool:
-    ignore_keys = ["content", "role", "name"]
-    return any(
-        message.get(key, None) is not None for key in message if key not in ignore_keys
-    )
+    # Much faster due to set lookup and direct items() iteration
+    for key, value in message.items():
+        if key not in _IGNORE_KEYS_SET and value is not None:
+            return True
+    return False
 
 
 def _audio_or_image_in_message_content(message: AllMessageValues) -> bool:
@@ -822,3 +824,5 @@ def set_last_user_message(
         messages.reverse()
     messages.append({"role": "user", "content": content})
     return messages
+
+_IGNORE_KEYS_SET = {"content", "role", "name"}
