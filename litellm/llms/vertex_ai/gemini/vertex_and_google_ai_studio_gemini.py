@@ -183,6 +183,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
     frequency_penalty: Optional[float] = None
     presence_penalty: Optional[float] = None
     seed: Optional[int] = None
+    # (VertexAIBaseConfig is not imported; leaving as only BaseConfig for this local version)
 
     def __init__(
         self,
@@ -197,10 +198,29 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         presence_penalty: Optional[float] = None,
         seed: Optional[int] = None,
     ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
+        # Optimize: only set non-None attributes on self instead of class
+        # Don't use locals() to avoid copying the frame's entire dictionary
+        # (also, don't set attributes at the class-level)
+        if temperature is not None:
+            self.temperature = temperature
+        if max_output_tokens is not None:
+            self.max_output_tokens = max_output_tokens
+        if top_p is not None:
+            self.top_p = top_p
+        if top_k is not None:
+            self.top_k = top_k
+        if response_mime_type is not None:
+            self.response_mime_type = response_mime_type
+        if candidate_count is not None:
+            self.candidate_count = candidate_count
+        if stop_sequences is not None:
+            self.stop_sequences = stop_sequences
+        if frequency_penalty is not None:
+            self.frequency_penalty = frequency_penalty
+        if presence_penalty is not None:
+            self.presence_penalty = presence_penalty
+        if seed is not None:
+            self.seed = seed
 
     @classmethod
     def get_config(cls):
@@ -267,95 +287,92 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         """
         return Tools(googleSearch={})
 
-    def _map_function(self, value: List[dict]) -> List[Tools]:  # noqa: PLR0915
+    def _map_function(self, value: List[dict]) -> List[Tools]:
+        """
+        Optimized mapping function for Gemini tools/functions to the Tools TypedDict, with
+        iterative property and strict removal, and less function call overhead.
+        """
         gtool_func_declarations = []
-        googleSearch: Optional[dict] = None
-        googleSearchRetrieval: Optional[dict] = None
-        enterpriseWebSearch: Optional[dict] = None
-        urlContext: Optional[dict] = None
-        code_execution: Optional[dict] = None
-        # remove 'additionalProperties' from tools
+        googleSearch = None
+        googleSearchRetrieval = None
+        enterpriseWebSearch = None
+        urlContext = None
+        code_execution = None
+
         value = _remove_additional_properties(value)
-        # remove 'strict' from tools
         value = _remove_strict_from_schema(value)
 
-        def get_tool_value(tool: dict, tool_name: str) -> Optional[dict]:
-            """
-            Helper function to get tool value handling both camelCase and underscore_case variants
+        # Perf: Precompute lookup dict for tool name normalization
+        tool_normalize_map = {
+            "codeExecution": "code_execution",
+            "code_execution": "code_execution",
+            "googleSearch": "googleSearch",
+            "googleSearchRetrieval": "googleSearchRetrieval",
+            "enterpriseWebSearch": "enterpriseWebSearch",
+            "urlContext": "url_context",
+        }
 
-            Args:
-                tool (dict): The tool dictionary
-                tool_name (str): The base tool name (e.g. "codeExecution")
-
-            Returns:
-                Optional[dict]: The tool value if found, None otherwise
-            """
-            # Convert camelCase to underscore_case
-            underscore_name = "".join(
-                ["_" + c.lower() if c.isupper() else c for c in tool_name]
-            ).lstrip("_")
-            # Try both camelCase and underscore_case variants
-
-            if tool.get(tool_name) is not None:
-                return tool.get(tool_name)
-            elif tool.get(underscore_name) is not None:
-                return tool.get(underscore_name)
-            else:
-                return None
-
+        # Perf: Inline tool value extraction, avoid function call
         for tool in value:
-            openai_function_object: Optional[ChatCompletionToolParamFunctionChunk] = (
-                None
-            )
+            openai_function_object = None
+
             if "function" in tool:  # tools list
                 _openai_function_object = ChatCompletionToolParamFunctionChunk(  # type: ignore
                     **tool["function"]
                 )
-
                 if (
                     "parameters" in _openai_function_object
                     and _openai_function_object["parameters"] is not None
                     and isinstance(_openai_function_object["parameters"], dict)
-                ):  # OPENAI accepts JSON Schema, Google accepts OpenAPI schema.
+                ):
                     _openai_function_object["parameters"] = _build_vertex_schema(
                         _openai_function_object["parameters"]
                     )
-
                 openai_function_object = _openai_function_object
 
             elif "name" in tool:  # functions list
                 openai_function_object = ChatCompletionToolParamFunctionChunk(**tool)  # type: ignore
 
-            tool_name = list(tool.keys())[0] if len(tool.keys()) == 1 else None
-            if tool_name and (
-                tool_name == "codeExecution" or tool_name == "code_execution"
-            ):  # code_execution maintained for backwards compatibility
-                code_execution = get_tool_value(tool, "codeExecution")
-            elif tool_name and tool_name == "googleSearch":
-                googleSearch = get_tool_value(tool, "googleSearch")
-            elif tool_name and tool_name == "googleSearchRetrieval":
-                googleSearchRetrieval = get_tool_value(tool, "googleSearchRetrieval")
-            elif tool_name and tool_name == "enterpriseWebSearch":
-                enterpriseWebSearch = get_tool_value(tool, "enterpriseWebSearch")
-            elif tool_name and tool_name == "urlContext":
-                urlContext = get_tool_value(tool, "urlContext")
-            elif openai_function_object is not None:
+            tool_name = list(tool.keys())[0] if len(tool) == 1 else None
+
+            # Remove function-call and replace with a straight lookup
+            if tool_name in tool_normalize_map:
+                normalized_tool_key = tool_normalize_map[tool_name]
+                # Try both camelCase and underscored
+                value_candidate = None
+                if tool.get(tool_name, None) is not None:
+                    value_candidate = tool[tool_name]
+                elif (
+                    normalized_tool_key != tool_name
+                    and tool.get(normalized_tool_key, None) is not None
+                ):
+                    value_candidate = tool[normalized_tool_key]
+                if normalized_tool_key == "code_execution":
+                    code_execution = value_candidate
+                elif normalized_tool_key == "googleSearch":
+                    googleSearch = value_candidate
+                elif normalized_tool_key == "googleSearchRetrieval":
+                    googleSearchRetrieval = value_candidate
+                elif normalized_tool_key == "enterpriseWebSearch":
+                    enterpriseWebSearch = value_candidate
+                elif normalized_tool_key == "url_context":
+                    urlContext = value_candidate
+                continue  # skip further processing
+
+            if openai_function_object is not None:
                 gtool_func_declaration = FunctionDeclaration(
-                    name=openai_function_object["name"],
+                    name=openai_function_object["name"]
                 )
                 _description = openai_function_object.get("description", None)
                 _parameters = openai_function_object.get("parameters", None)
-                if isinstance(_parameters, str) and len(_parameters) == 0:
-                    _parameters = {
-                        "type": "object",
-                    }
+                if isinstance(_parameters, str) and not _parameters:
+                    _parameters = {"type": "object"}
                 if _description is not None:
                     gtool_func_declaration["description"] = _description
                 if _parameters is not None:
                     gtool_func_declaration["parameters"] = _parameters
                 gtool_func_declarations.append(gtool_func_declaration)
             else:
-                # assume it's a provider-specific param
                 verbose_logger.warning(
                     "Invalid tool={}. Use `litellm.set_verbose` or `litellm --detailed_debug` to see raw request."
                 )

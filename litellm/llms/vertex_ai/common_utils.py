@@ -184,27 +184,25 @@ def _build_vertex_schema(parameters: dict, add_property_ordering: bool = False):
     Returns:
         parameters: dict - the input parameters, modified in place
     """
-    # Get valid fields from Schema TypedDict
-    valid_schema_fields = set(get_type_hints(Schema).keys())
+    # Perf: get_type_hints is slow and doesn't change, so cache globally
+    # Instead of function-level, cache in attribute to avoid recomputation
+    # This optimization is crucial if _build_vertex_schema is called repeatedly.
+    if not hasattr(_build_vertex_schema, "_cached_schema_fields"):
+        _build_vertex_schema._cached_schema_fields = set(get_type_hints(Schema).keys())
+    valid_schema_fields = _build_vertex_schema._cached_schema_fields
 
-    defs = parameters.pop("$defs", {})
-    # flatten the defs
-    for name, value in defs.items():
-        unpack_defs(value, defs)
-    unpack_defs(parameters, defs)
+    defs = parameters.pop("$defs", None)
+    if defs:
+        for value in defs.values():
+            unpack_defs(value, defs)
+        unpack_defs(parameters, defs)
+    else:
+        unpack_defs(parameters, {})
 
-    # 5. Nullable fields:
-    #     * https://github.com/pydantic/pydantic/issues/1270
-    #     * https://stackoverflow.com/a/58841311
-    #     * https://github.com/pydantic/pydantic/discussions/4872
     convert_anyof_null_to_nullable(parameters)
-
-    # Handle empty items objects
     process_items(parameters)
     add_object_type(parameters)
-    # Postprocessing
     # Filter out fields that don't exist in Schema
-
     parameters = filter_schema_fields(parameters, valid_schema_fields)
 
     if add_property_ordering:
