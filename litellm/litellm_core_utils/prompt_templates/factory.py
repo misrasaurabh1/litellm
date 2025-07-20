@@ -14,7 +14,7 @@ import litellm.types.llms
 from litellm import verbose_logger
 from litellm.llms.custom_httpx.http_handler import HTTPHandler, get_async_httpx_client
 from litellm.types.llms.anthropic import *
-from litellm.types.llms.bedrock import MessageBlock as BedrockMessageBlock
+from litellm.types.llms.bedrock import ContentBlock as BedrockContentBlock, ToolUseBlock as BedrockToolUseBlock, MessageBlock as BedrockMessageBlock
 from litellm.types.llms.custom_http import httpxSpecialProvider
 from litellm.types.llms.ollama import OllamaVisionModelObject
 from litellm.types.llms.openai import (
@@ -2599,7 +2599,9 @@ def _convert_to_bedrock_tool_call_invoke(
           "type": "function",
           "function": {
             "name": "get_current_weather",
-            "arguments": "{\n\"location\": \"Boston, MA\"\n}"
+            "arguments": "{
+"location": "Boston, MA"
+}"
           }
         }
       ]
@@ -2624,19 +2626,35 @@ def _convert_to_bedrock_tool_call_invoke(
     - extract id
     """
 
+    # Optimization: local variable binding
+    BedrockToolUseBlock_ = BedrockToolUseBlock
+    BedrockContentBlock_ = BedrockContentBlock
+    json_loads = json.loads
+    append = list.append
+
     try:
         _parts_list: List[BedrockContentBlock] = []
+        append_ = _parts_list.append
         for tool in tool_calls:
-            if "function" in tool:
-                id = tool["id"]
-                name = tool["function"].get("name", "")
-                arguments = tool["function"].get("arguments", "")
-                arguments_dict = json.loads(arguments) if arguments else {}
-                bedrock_tool = BedrockToolUseBlock(
-                    input=arguments_dict, name=name, toolUseId=id
+            function = tool.get("function")
+            if function is not None:
+                id_ = tool["id"]
+                func_name = function.get("name", "")
+                arguments = function.get("arguments", "")
+                if arguments:
+                    # Fast path: skip parsing if trivial dict string
+                    # (optional micro-optimization: skip loads() on '{}')
+                    if arguments == "{}":
+                        arguments_dict = {}
+                    else:
+                        arguments_dict = json_loads(arguments)
+                else:
+                    arguments_dict = {}
+                bedrock_tool = BedrockToolUseBlock_(
+                    input=arguments_dict, name=func_name, toolUseId=id_
                 )
-                bedrock_content_block = BedrockContentBlock(toolUse=bedrock_tool)
-                _parts_list.append(bedrock_content_block)
+                bedrock_content_block = BedrockContentBlock_(toolUse=bedrock_tool)
+                append_(bedrock_content_block)
         return _parts_list
     except Exception as e:
         raise Exception(
