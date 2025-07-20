@@ -2383,7 +2383,7 @@ def _parse_content_type(content_type: str) -> str:
 
 
 def _parse_mime_type(base64_data: str) -> Optional[str]:
-    mime_type_match = re.match(r"data:(.*?);base64", base64_data)
+    mime_type_match = _mime_type_regex.match(base64_data)
     if mime_type_match:
         return mime_type_match.group(1)
     else:
@@ -3953,3 +3953,5 @@ def get_attribute_or_key(tool_or_function, attribute, default=None):
     if hasattr(tool_or_function, attribute):
         return getattr(tool_or_function, attribute)
     return tool_or_function.get(attribute, default)
+
+_mime_type_regex = re.compile(r"data:(.*?);base64")
