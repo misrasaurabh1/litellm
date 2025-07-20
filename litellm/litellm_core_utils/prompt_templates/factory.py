@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Union, Any, List, Optional, Tuple, cast, overload
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -37,6 +37,7 @@ from litellm.types.utils import GenericImageParsingChunk
 
 from .common_utils import convert_content_list_to_str, is_non_content_values_set
 from .image_handling import convert_url_to_base64
+from litellm.types.llms.cohere import CallObject, ToolResultObject
 
 
 def default_pt(messages):
@@ -1846,83 +1847,39 @@ def convert_openai_message_to_cohere_tool_result(
             "content": {"location": "San Francisco, CA", "unit": "fahrenheit", "temperature": "72"},
     },
     """
-    """
-    OpenAI message with a function call looks like:
-    {
-        "role": "function",
-        "name": "get_current_weather",
-        "content": "function result goes here",
-    }
-    """
+    content_str: str = _extract_content_str(message["content"])
+    content = _safe_json_loads(content_str) if content_str else {}
 
-    """
-    Cohere tool_results look like:
-    {
-       "call": {
-           "name": "query_daily_sales_report",
-           "parameters": {
-               "day": "2023-09-29"
-           },
-       },
-       "outputs": [
-           {
-               "date": "2023-09-29",
-               "summary": "Total Sales Amount: 10000, Total Units Sold: 250"
-           }
-       ]
-   },
-    """
-
-    content_str: str = ""
-    if isinstance(message["content"], str):
-        content_str = message["content"]
-    elif isinstance(message["content"], List):
-        content_list = message["content"]
-        for content in content_list:
-            if content["type"] == "text":
-                content_str += content["text"]
-    if len(content_str) > 0:
-        try:
-            content = json.loads(content_str)
-        except json.JSONDecodeError:
-            content = {"result": content_str}
-    else:
-        content = {}
     name = ""
     arguments = {}
-    # Recover name from last message with tool calls
-    if len(tool_calls) > 0:
-        tools = tool_calls
-        msg_tool_call_id = message.get("tool_call_id", None)
-        for tool in tools:
-            prev_tool_call_id = tool.get("id", None)
-            if (
-                msg_tool_call_id
-                and prev_tool_call_id
-                and msg_tool_call_id == prev_tool_call_id
-            ):
-                name = tool.get("function", {}).get("name", "")
-                arguments_str = tool.get("function", {}).get("arguments", "")
-                if arguments_str is not None and len(arguments_str) > 0:
+
+    if tool_calls:
+        tool_map = getattr(convert_openai_message_to_cohere_tool_result, "_tool_map", None)
+        # cache the id-indexed tool_calls in function attribute for repeated conversions in a batch
+        if tool_map is None or getattr(convert_openai_message_to_cohere_tool_result, "_tool_calls_id", None) != id(tool_calls):
+            tool_map = _index_tool_calls(tool_calls)
+            setattr(convert_openai_message_to_cohere_tool_result, "_tool_map", tool_map)
+            setattr(convert_openai_message_to_cohere_tool_result, "_tool_calls_id", id(tool_calls))
+        msg_tool_call_id = message.get("tool_call_id")
+        tool = tool_map.get(msg_tool_call_id)
+        if tool is not None:
+            function_info = tool.get("function", {})
+            name = function_info.get("name", "")
+            arguments_str = function_info.get("arguments", "")
+            if arguments_str:
+                try:
                     arguments = json.loads(arguments_str)
+                except Exception:
+                    arguments = {}
 
     if message["role"] == "function":
-        function_message: ChatCompletionFunctionMessage = message
-        name = function_message["name"]
-        cohere_tool_result: ToolResultObject = {
-            "call": CallObject(name=name, parameters=arguments),
-            "outputs": [content],
-        }
-        return cohere_tool_result
-    else:
-        # We can't determine from openai message format whether it's a successful or
-        # error call result so default to the successful result template
+        name = message["name"]
 
-        cohere_tool_result = {
-            "call": CallObject(name=name, parameters=arguments),
-            "outputs": [content],
-        }
-        return cohere_tool_result
+    cohere_tool_result: ToolResultObject = {
+        "call": CallObject(name=name, parameters=arguments),
+        "outputs": [content],
+    }
+    return cohere_tool_result
 
 
 def get_all_tool_calls(messages: List) -> List:
@@ -1932,11 +1889,12 @@ def get_all_tool_calls(messages: List) -> List:
     Done to handle openai no longer returning tool call 'name' in tool results.
     """
     tool_calls: List = []
+    # avoid multiple attribute lookups and use local append
+    tc_extend = tool_calls.extend
     for m in messages:
-        if m.get("tool_calls", None) is not None:
-            if isinstance(m["tool_calls"], list):
-                tool_calls.extend(m["tool_calls"])
-
+        tool_calls_list = m.get("tool_calls")
+        if isinstance(tool_calls_list, list):
+            tc_extend(tool_calls_list)
     return tool_calls
 
 
@@ -2129,18 +2087,22 @@ def cohere_messages_pt_v2(  # noqa: PLR0915
 
 def cohere_message_pt(messages: list):
     tool_calls: List = get_all_tool_calls(messages=messages)
-    prompt = ""
+    prompt_parts = []
     tool_results = []
     for message in messages:
-        # check if this is a tool_call result
         if message["role"] == "tool":
             tool_result = convert_openai_message_to_cohere_tool_result(
                 message, tool_calls=tool_calls
             )
             tool_results.append(tool_result)
         elif message.get("content"):
-            prompt += message["content"] + "\n\n"
-    prompt = prompt.rstrip()
+            # Use list for prompt building for better performance
+            prompt_parts.append(message["content"])
+            prompt_parts.append('\n\n')
+    if prompt_parts:
+        prompt = ''.join(prompt_parts).rstrip()
+    else:
+        prompt = ""
     return prompt, tool_results
 
 
@@ -3953,3 +3915,22 @@ def get_attribute_or_key(tool_or_function, attribute, default=None):
     if hasattr(tool_or_function, attribute):
         return getattr(tool_or_function, attribute)
     return tool_or_function.get(attribute, default)
+
+
+def _index_tool_calls(tool_calls: List) -> dict:
+    """Create a tool_call_id -> tool mapping for O(1) lookup."""
+    return {tool.get("id"): tool for tool in tool_calls if tool.get("id")}
+
+def _extract_content_str(message_content):
+    # Handles string or list of dicts with "type":"text"
+    if isinstance(message_content, str):
+        return message_content
+    elif isinstance(message_content, list):
+        return ''.join(content.get("text", '') for content in message_content if content.get("type") == "text")
+    return ""
+
+def _safe_json_loads(val):
+    try:
+        return json.loads(val)
+    except Exception:
+        return {"result": val}
