@@ -71,7 +71,7 @@ from litellm.types.utils import (
     Usage,
 )
 from litellm.utils import (
-    CustomStreamWrapper,
+    _supports_factory, CustomStreamWrapper,
     ModelResponse,
     is_base64_encoded,
     supports_reasoning,
@@ -197,16 +197,24 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         presence_penalty: Optional[float] = None,
         seed: Optional[int] = None,
     ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
+        # set instance attributes, not class attrs:
+        if temperature is not None: self.temperature = temperature
+        if max_output_tokens is not None: self.max_output_tokens = max_output_tokens
+        if top_p is not None: self.top_p = top_p
+        if top_k is not None: self.top_k = top_k
+        if response_mime_type is not None: self.response_mime_type = response_mime_type
+        if candidate_count is not None: self.candidate_count = candidate_count
+        if stop_sequences is not None: self.stop_sequences = stop_sequences
+        if frequency_penalty is not None: self.frequency_penalty = frequency_penalty
+        if presence_penalty is not None: self.presence_penalty = presence_penalty
+        if seed is not None: self.seed = seed
 
     @classmethod
     def get_config(cls):
         return super().get_config()
 
     def get_supported_openai_params(self, model: str) -> List[str]:
+        # All static params first.
         supported_params = [
             "temperature",
             "top_p",
@@ -230,8 +238,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
             "web_search_options",
         ]
         if supports_reasoning(model):
-            supported_params.append("reasoning_effort")
-            supported_params.append("thinking")
+            supported_params += ["reasoning_effort", "thinking"]
         return supported_params
 
     def map_tool_choice_values(
@@ -1506,6 +1513,15 @@ def make_sync_call(
     )
 
     return completion_stream
+
+
+def _supports_reasoning(model: str, custom_llm_provider: Optional[str] = None) -> bool:
+    """
+    Check if the given model supports reasoning and return a boolean value.
+    """
+    return _supports_factory(
+        model=model, custom_llm_provider=custom_llm_provider, key="supports_reasoning"
+    )
 
 
 class VertexLLM(VertexBase):
