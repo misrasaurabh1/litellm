@@ -197,10 +197,17 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         presence_penalty: Optional[float] = None,
         seed: Optional[int] = None,
     ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
+        # Set instance-level variables (faster and correct for config objects)
+        self.temperature = temperature
+        self.max_output_tokens = max_output_tokens
+        self.top_p = top_p
+        self.top_k = top_k
+        self.response_mime_type = response_mime_type
+        self.candidate_count = candidate_count
+        self.stop_sequences = stop_sequences
+        self.frequency_penalty = frequency_penalty
+        self.presence_penalty = presence_penalty
+        self.seed = seed
 
     @classmethod
     def get_config(cls):
@@ -986,12 +993,10 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
 
         Addresses - https://github.com/BerriAI/litellm/pull/10141#discussion_r2052272035
         """
-        if usage_metadata.get("promptTokenCount", 0) + usage_metadata.get(
-            "candidatesTokenCount", 0
-        ) == usage_metadata.get("totalTokenCount", 0):
-            return True
-        else:
-            return False
+        return (
+            usage_metadata.get("promptTokenCount", 0)
+            + usage_metadata.get("candidatesTokenCount", 0)
+        ) == usage_metadata.get("totalTokenCount", 0)
 
     @staticmethod
     def _calculate_usage(
