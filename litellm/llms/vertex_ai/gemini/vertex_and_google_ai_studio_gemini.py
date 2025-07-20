@@ -85,6 +85,7 @@ from .transformation import (
     async_transform_request_body,
     sync_transform_request_body,
 )
+from litellm.litellm_core_utils.prompt_templates.common_utils import check_is_function_call
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
@@ -1916,12 +1917,8 @@ class VertexLLM(VertexBase):
 
 class ModelResponseIterator:
     def __init__(
-        self, streaming_response, sync_stream: bool, logging_obj: LoggingClass
+        self, streaming_response, sync_stream: bool, logging_obj: "LoggingClass"
     ):
-        from litellm.litellm_core_utils.prompt_templates.common_utils import (
-            check_is_function_call,
-        )
-
         self.streaming_response = streaming_response
         self.chunk_type: Literal["valid_json", "accumulated_json"] = "valid_json"
         self.accumulated_json = ""
