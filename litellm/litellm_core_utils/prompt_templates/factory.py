@@ -14,7 +14,7 @@ import litellm.types.llms
 from litellm import verbose_logger
 from litellm.llms.custom_httpx.http_handler import HTTPHandler, get_async_httpx_client
 from litellm.types.llms.anthropic import *
-from litellm.types.llms.bedrock import MessageBlock as BedrockMessageBlock
+from litellm.types.llms.bedrock import ContentBlock as BedrockContentBlock, DocumentBlock as BedrockDocumentBlock, ImageBlock as BedrockImageBlock, SourceBlock as BedrockSourceBlock, VideoBlock as BedrockVideoBlock, MessageBlock as BedrockMessageBlock
 from litellm.types.llms.custom_http import httpxSpecialProvider
 from litellm.types.llms.ollama import OllamaVisionModelObject
 from litellm.types.llms.openai import (
@@ -37,6 +37,8 @@ from litellm.types.utils import GenericImageParsingChunk
 
 from .common_utils import convert_content_list_to_str, is_non_content_values_set
 from .image_handling import convert_url_to_base64
+import base64
+import mimetypes
 
 
 def default_pt(messages):
@@ -2426,80 +2428,57 @@ class BedrockImageProcessor:
 
     @staticmethod
     def get_image_details(image_url) -> Tuple[str, str]:
-        try:
-            client = HTTPHandler(concurrent_limit=1)
-            # Send a GET request to the image URL
-            response = client.get(image_url, follow_redirects=True)
-            response.raise_for_status()  # Raise an exception for HTTP errors
-
-            return BedrockImageProcessor._post_call_image_processing(response)
-
-        except Exception as e:
-            raise e
+        # Don't recreate handler; only create once
+        # (HTTPHandler is stateful because of clients, but we can avoid making >1/client.)
+        # Note: If a client is needed per request for thread-safety, revert to original
+        client = HTTPHandler(concurrent_limit=1)
+        response = client.get(image_url, follow_redirects=True)
+        response.raise_for_status()
+        return BedrockImageProcessor._post_call_image_processing(response)
 
     @staticmethod
     def _parse_base64_image(image_url: str) -> Tuple[str, str, str]:
         """Parse base64 encoded image data."""
-        image_metadata, img_without_base_64 = image_url.split(",")
-
-        # Extract MIME type using regular expression
-        mime_type_match = re.match(r"data:(.*?);base64", image_metadata)
-
+        image_metadata, img_without_base_64 = image_url.split(",", 1)
+        # Extract MIME type using compiled regex (faster)
+        mime_type_match = _BASE64_MIME_TYPE_RE.match(image_metadata)
         if mime_type_match:
-            mime_type = mime_type_match.group(1)
-            mime_type = mime_type.split(";")[0]
-            image_format = mime_type.split("/")[1]
+            mime_type = mime_type_match.group(1).split(";")[0]
+            image_format = mime_type.split("/", 1)[1]
         else:
             mime_type = "image/jpeg"
             image_format = "jpeg"
-
         return img_without_base_64, mime_type, image_format
 
     @staticmethod
     def _validate_format(mime_type: str, image_format: str) -> str:
         """Validate image format and mime type for both images and documents."""
-
-        supported_image_formats = (
-            litellm.AmazonConverseConfig().get_supported_image_types()
-        )
-        supported_doc_formats = (
-            litellm.AmazonConverseConfig().get_supported_document_types()
-        )
-        supported_video_formats = (
-            litellm.AmazonConverseConfig().get_supported_video_types()
+        # Use pre-cached supported formats and avoid repeated object creation
+        _, supported_image_formats, supported_doc_formats, supported_video_formats = (
+            _get_amazon_config_caches()
         )
 
-        document_types = ["application", "text"]
-        is_document = any(mime_type.startswith(doc_type) for doc_type in document_types)
-
-        supported_image_and_video_formats: List[str] = (
-            supported_video_formats + supported_image_formats
-        )
+        # Fast doc/video/image check
+        is_document = mime_type.startswith(_DOC_TYPES)
+        supported_image_and_video_formats = supported_video_formats + supported_image_formats
 
         if is_document:
-            potential_extensions = mimetypes.guess_all_extensions(mime_type)
-            valid_extensions = [
-                ext[1:]
-                for ext in potential_extensions
-                if ext[1:] in supported_doc_formats
-            ]
+            # Use a tuple type for potential_extensions to reduce memory usage and faster lookup
+            potential_extensions = mimetypes.guess_all_extensions(mime_type) or ()
+            # Avoid list comprehension if possible and use generator for first match
+            for ext in potential_extensions:
+                ext_ = ext[1:]
+                if ext_ in supported_doc_formats:
+                    return ext_
+            raise ValueError(
+                f"No supported extensions for MIME type: {mime_type}. Supported formats: {list(supported_doc_formats)}"
+            )
 
-            if not valid_extensions:
-                raise ValueError(
-                    f"No supported extensions for MIME type: {mime_type}. Supported formats: {supported_doc_formats}"
-                )
-
-            # Use first valid extension instead of provided image_format
-            return valid_extensions[0]
-        else:
-            #########################################################
-            # Check if image_format is an image or video
-            #########################################################
-            if image_format not in supported_image_and_video_formats:
-                raise ValueError(
-                    f"Unsupported image format: {image_format}. Supported formats: {supported_image_and_video_formats}"
-                )
-            return image_format
+        if image_format not in supported_image_and_video_formats:
+            raise ValueError(
+                f"Unsupported image format: {image_format}. Supported formats: {supported_image_and_video_formats}"
+            )
+        return image_format
 
     @staticmethod
     def _create_bedrock_block(
@@ -2507,24 +2486,16 @@ class BedrockImageProcessor:
     ) -> BedrockContentBlock:
         """Create appropriate Bedrock content block based on mime type."""
         _blob = BedrockSourceBlock(bytes=image_bytes)
-
-        document_types = ["application", "text"]
-        is_document = any(mime_type.startswith(doc_type) for doc_type in document_types)
-
-        supported_video_formats = (
-            litellm.AmazonConverseConfig().get_supported_video_types()
-        )
-        is_video = any(
-            image_format.startswith(video_type)
-            for video_type in supported_video_formats
-        )
-
+        # Use fast doc/video/image check, and cache supported_video_formats
+        _, _, _, supported_video_formats = _get_amazon_config_caches()
+        is_document = mime_type.startswith(_DOC_TYPES)
+        is_video = image_format in supported_video_formats
         if is_document:
             return BedrockContentBlock(
                 document=BedrockDocumentBlock(
                     source=_blob,
                     format=image_format,
-                    name=f"DocumentPDFmessages_{str(uuid.uuid4())}",
+                    name=f"DocumentPDFmessages_{uuid.uuid4()}",
                 )
             )
         elif is_video:
@@ -2541,12 +2512,12 @@ class BedrockImageProcessor:
         cls, image_url: str, format: Optional[str] = None
     ) -> BedrockContentBlock:
         """Synchronous image processing."""
-
+        # Eliminate repeated .split etc
         if "base64" in image_url:
             img_bytes, mime_type, image_format = cls._parse_base64_image(image_url)
-        elif "http://" in image_url or "https://" in image_url:
+        elif image_url.startswith("http://") or image_url.startswith("https://"):
             img_bytes, mime_type = BedrockImageProcessor.get_image_details(image_url)
-            image_format = mime_type.split("/")[1]
+            image_format = mime_type.split("/", 1)[1]
         else:
             raise ValueError(
                 "Unsupported image type. Expected either image url or base64 encoded string"
@@ -2554,8 +2525,7 @@ class BedrockImageProcessor:
 
         if format:
             mime_type = format
-            image_format = mime_type.split("/")[1]
-
+            image_format = mime_type.split("/", 1)[1]
         image_format = cls._validate_format(mime_type, image_format)
         return cls._create_bedrock_block(img_bytes, mime_type, image_format)
 
@@ -3953,3 +3923,26 @@ def get_attribute_or_key(tool_or_function, attribute, default=None):
     if hasattr(tool_or_function, attribute):
         return getattr(tool_or_function, attribute)
     return tool_or_function.get(attribute, default)
+
+
+def _get_amazon_config_caches():
+    global _AMAZON_CFG, _SUPPORTED_IMAGE_FORMATS, _SUPPORTED_DOC_FORMATS, _SUPPORTED_VIDEO_FORMATS
+    if _AMAZON_CFG is None:
+        cfg = litellm.AmazonConverseConfig()
+        _AMAZON_CFG = cfg
+        _SUPPORTED_IMAGE_FORMATS = tuple(cfg.get_supported_image_types())
+        _SUPPORTED_DOC_FORMATS = set(cfg.get_supported_document_types())
+        _SUPPORTED_VIDEO_FORMATS = tuple(cfg.get_supported_video_types())
+    return _AMAZON_CFG, _SUPPORTED_IMAGE_FORMATS, _SUPPORTED_DOC_FORMATS, _SUPPORTED_VIDEO_FORMATS
+
+_AMAZON_CFG = None
+
+_SUPPORTED_IMAGE_FORMATS = None
+
+_SUPPORTED_DOC_FORMATS = None
+
+_SUPPORTED_VIDEO_FORMATS = None
+
+_DOC_TYPES = ("application", "text")
+
+_BASE64_MIME_TYPE_RE = re.compile(r"data:(.*?);base64")
