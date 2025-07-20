@@ -18,13 +18,8 @@ class JinaAIEmbeddingConfig:
     Reference: https://jina.ai/embeddings/
     """
 
-    def __init__(
-        self,
-    ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
+    def __init__(self) -> None:
+        pass  # No initialization needed as there are no parameters
 
     @classmethod
     def get_config(cls):
@@ -47,9 +42,7 @@ class JinaAIEmbeddingConfig:
     def get_supported_openai_params(self) -> List[str]:
         return ["dimensions"]
 
-    def map_openai_params(
-        self, non_default_params: dict, optional_params: dict
-    ) -> dict:
+    def map_openai_params(self, non_default_params: dict, optional_params: dict) -> dict:
         if "dimensions" in non_default_params:
             optional_params["dimensions"] = non_default_params["dimensions"]
         return optional_params
@@ -66,13 +59,11 @@ class JinaAIEmbeddingConfig:
                 - api_base: str
                 - dynamic_api_key: str
         """
-        api_base = (
-            api_base or get_secret_str("JINA_AI_API_BASE") or "https://api.jina.ai/v1"
-        )  # type: ignore
-        dynamic_api_key = api_key or (
-            get_secret_str("JINA_AI_API_KEY")
-            or get_secret_str("JINA_AI_API_KEY")
-            or get_secret_str("JINA_AI_API_KEY")
-            or get_secret_str("JINA_AI_TOKEN")
-        )
-        return LlmProviders.JINA_AI.value, api_base, dynamic_api_key
+        resolved_api_base = api_base or get_secret_str("JINA_AI_API_BASE") or "https://api.jina.ai/v1"
+        # Avoid repeat secret lookups
+        resolved_api_key = api_key
+        if not resolved_api_key:
+            resolved_api_key = get_secret_str("JINA_AI_API_KEY")
+            if not resolved_api_key:
+                resolved_api_key = get_secret_str("JINA_AI_TOKEN")
+        return LlmProviders.JINA_AI.value, resolved_api_base, resolved_api_key
