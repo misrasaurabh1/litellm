@@ -187,6 +187,9 @@ from litellm.types.utils import (
     Usage,
     all_litellm_params,
 )
+from litellm import verbose_logger
+from litellm.llms.base_llm.chat.transformation import BaseConfig
+from typing import List, Optional
 
 try:
     # Python 3.9+
@@ -2838,20 +2841,18 @@ def _remove_additional_properties(schema):
 
     Relevant Issues: https://github.com/BerriAI/litellm/issues/6136, https://github.com/BerriAI/litellm/issues/6088
     """
-    if isinstance(schema, dict):
-        # Remove the 'additionalProperties' key if it exists and is set to False
-        if "additionalProperties" in schema and schema["additionalProperties"] is False:
-            del schema["additionalProperties"]
-
-        # Recursively process all dictionary values
-        for key, value in schema.items():
-            _remove_additional_properties(value)
-
-    elif isinstance(schema, list):
-        # Recursively process all items in the list
-        for item in schema:
-            _remove_additional_properties(item)
-
+    # Stack-based, iterative approach for depth-first traversal
+    stack = [schema]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            # Remove the 'additionalProperties' key if it exists and is set to False
+            if current.get("additionalProperties", None) is False:
+                del current["additionalProperties"]
+            # Push dictionary values (not keys) onto the stack for further processing
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
     return schema
 
 
@@ -2859,20 +2860,16 @@ def _remove_strict_from_schema(schema):
     """
     Relevant Issues: https://github.com/BerriAI/litellm/issues/6136, https://github.com/BerriAI/litellm/issues/6088
     """
-    if isinstance(schema, dict):
-        # Remove the 'additionalProperties' key if it exists and is set to False
-        if "strict" in schema:
-            del schema["strict"]
-
-        # Recursively process all dictionary values
-        for key, value in schema.items():
-            _remove_strict_from_schema(value)
-
-    elif isinstance(schema, list):
-        # Recursively process all items in the list
-        for item in schema:
-            _remove_strict_from_schema(item)
-
+    # Stack-based, iterative approach for depth-first traversal
+    stack = [schema]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            if "strict" in current:
+                del current["strict"]
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
     return schema
 
 
