@@ -3702,18 +3702,25 @@ def _bedrock_tools_pt(tools: List) -> List[BedrockToolBlock]:
 
 # Function call template
 def function_call_prompt(messages: list, functions: list):
-    function_prompt = """Produce JSON OUTPUT ONLY! Adhere to this format {"name": "function_name", "arguments":{"argument_name": "argument_value"}} The following functions are available to you:"""
+    # Use a list to build the prompt efficiently
+    function_prompt_parts = [
+        'Produce JSON OUTPUT ONLY! Adhere to this format {"name": "function_name", "arguments":{"argument_name": "argument_value"}} The following functions are available to you:'
+    ]
     for function in functions:
-        function_prompt += f"""\n{function}\n"""
+        function_prompt_parts.append(f"\n{function}\n")
+    function_prompt = ''.join(function_prompt_parts)
 
     function_added_to_prompt = False
+
+    # Avoid repeated "system" check, use target role comparison for speed
+    system_role = "system"
     for message in messages:
-        if "system" in message["role"]:
-            message["content"] += f""" {function_prompt}"""
+        if system_role in message["role"]:
+            message["content"] += f" {function_prompt}"
             function_added_to_prompt = True
 
-    if function_added_to_prompt is False:
-        messages.append({"role": "system", "content": f"""{function_prompt}"""})
+    if not function_added_to_prompt:
+        messages.append({"role": system_role, "content": function_prompt})
 
     return messages
 
