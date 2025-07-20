@@ -197,10 +197,17 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         presence_penalty: Optional[float] = None,
         seed: Optional[int] = None,
     ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
+        # Set all fields explicitly; avoids dynamic setattr & class attribute mutation
+        if temperature is not None: self.temperature = temperature
+        if max_output_tokens is not None: self.max_output_tokens = max_output_tokens
+        if top_p is not None: self.top_p = top_p
+        if top_k is not None: self.top_k = top_k
+        if response_mime_type is not None: self.response_mime_type = response_mime_type
+        if candidate_count is not None: self.candidate_count = candidate_count
+        if stop_sequences is not None: self.stop_sequences = stop_sequences
+        if frequency_penalty is not None: self.frequency_penalty = frequency_penalty
+        if presence_penalty is not None: self.presence_penalty = presence_penalty
+        if seed is not None: self.seed = seed
 
     @classmethod
     def get_config(cls):
@@ -630,14 +637,15 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         """
         Common auth params across bedrock/vertex_ai/azure/watsonx
         """
-        return {"project": "vertex_project", "region_name": "vertex_location"}
+        # Avoid reconstructing the dict every call
+        return _VERTEX_SPECIAL_AUTH_PARAMS
 
     def map_special_auth_params(self, non_default_params: dict, optional_params: dict):
         mapped_params = self.get_mapped_special_auth_params()
 
-        for param, value in non_default_params.items():
-            if param in mapped_params:
-                optional_params[mapped_params[param]] = value
+        # Use set intersection for better locality and to avoid double hash lookup
+        for param in non_default_params.keys() & mapped_params.keys():
+            optional_params[mapped_params[param]] = non_default_params[param]
         return optional_params
 
     def get_eu_regions(self) -> List[str]:
@@ -2077,3 +2085,8 @@ class ModelResponseIterator:
             raise StopAsyncIteration
         except ValueError as e:
             raise RuntimeError(f"Error parsing chunk: {e},\nReceived chunk: {chunk}")
+
+_VERTEX_SPECIAL_AUTH_PARAMS = {
+    "project": "vertex_project",
+    "region_name": "vertex_location"
+}
