@@ -2313,17 +2313,18 @@ def gemini_text_image_pt(messages: list):
 
 
 def azure_text_pt(messages: list):
-    prompt = ""
+    prompt_parts = []  # Changed to list for efficient string building
     for message in messages:
-        if isinstance(message["content"], str):
-            prompt += message["content"]
-        elif isinstance(message["content"], list):
+        content = message["content"]
+        if isinstance(content, str):
+            prompt_parts.append(content)
+        elif isinstance(content, list):
             # see https://docs.litellm.ai/docs/providers/openai#openai-vision-models
-            for element in message["content"]:
+            for element in content:
                 if isinstance(element, dict):
-                    if element["type"] == "text":
-                        prompt += element["text"]
-    return prompt
+                    if element.get("type") == "text":
+                        prompt_parts.append(element["text"])
+    return ''.join(prompt_parts)  # Efficiently join all parts at once
 
 
 ###### AZURE AI #######
