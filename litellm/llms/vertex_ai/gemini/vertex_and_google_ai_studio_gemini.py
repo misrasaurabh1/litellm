@@ -62,7 +62,7 @@ from litellm.types.llms.vertex_ai import (
     UsageMetadata,
 )
 from litellm.types.utils import (
-    ChatCompletionAudioResponse,
+    ModelResponseStream, ChatCompletionAudioResponse,
     ChatCompletionTokenLogprob,
     ChoiceLogprobs,
     CompletionTokensDetailsWrapper,
@@ -85,6 +85,7 @@ from .transformation import (
     async_transform_request_body,
     sync_transform_request_body,
 )
+from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
@@ -672,8 +673,9 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         Returns:
             str: The model name to use in the request to Vertex AI
         """
-        if VertexGeminiConfig._is_model_gemini_spec_model(model):
-            return VertexGeminiConfig._get_model_name_from_gemini_spec_model(model)
+        # Minor optimization: inline single-use call & early return
+        if model and "gemini/" in model:
+            return model.rsplit("/", 1)[-1]
         return model
 
     @staticmethod
