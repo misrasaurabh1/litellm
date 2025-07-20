@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Literal, Union, Any, List, Optional, Tuple, cast, overload
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -14,7 +14,7 @@ import litellm.types.llms
 from litellm import verbose_logger
 from litellm.llms.custom_httpx.http_handler import HTTPHandler, get_async_httpx_client
 from litellm.types.llms.anthropic import *
-from litellm.types.llms.bedrock import MessageBlock as BedrockMessageBlock
+from litellm.types.llms.bedrock import DocumentBlock as BedrockDocumentBlock, ImageBlock as BedrockImageBlock, SourceBlock as BedrockSourceBlock, ToolBlock as BedrockToolBlock, ToolInputSchemaBlock as BedrockToolInputSchemaBlock, ToolJsonSchemaBlock as BedrockToolJsonSchemaBlock, ToolSpecBlock as BedrockToolSpecBlock, VideoBlock as BedrockVideoBlock, BedrockConverseReasoningContentBlock, BedrockConverseReasoningTextBlock, ContentBlock as BedrockContentBlock, ToolResultBlock as BedrockToolResultBlock, ToolResultContentBlock as BedrockToolResultContentBlock, ToolUseBlock as BedrockToolUseBlock, MessageBlock as BedrockMessageBlock
 from litellm.types.llms.custom_http import httpxSpecialProvider
 from litellm.types.llms.ollama import OllamaVisionModelObject
 from litellm.types.llms.openai import (
@@ -37,6 +37,11 @@ from litellm.types.utils import GenericImageParsingChunk
 
 from .common_utils import convert_content_list_to_str, is_non_content_values_set
 from .image_handling import convert_url_to_base64
+import base64
+import httpx
+import mimetypes
+from email.message import Message
+from litellm.types.llms.cohere import CallObject, ChatHistory, ChatHistoryChatBot, ChatHistorySystem, ChatHistoryToolResult, ChatHistoryUser, ToolCallObject, ToolResultObject
 
 
 def default_pt(messages):
@@ -2541,21 +2546,17 @@ class BedrockImageProcessor:
         cls, image_url: str, format: Optional[str] = None
     ) -> BedrockContentBlock:
         """Synchronous image processing."""
-
+        # Fast path: avoid repeated string splits
         if "base64" in image_url:
             img_bytes, mime_type, image_format = cls._parse_base64_image(image_url)
         elif "http://" in image_url or "https://" in image_url:
             img_bytes, mime_type = BedrockImageProcessor.get_image_details(image_url)
-            image_format = mime_type.split("/")[1]
+            image_format = mime_type.split("/", 1)[1]
         else:
-            raise ValueError(
-                "Unsupported image type. Expected either image url or base64 encoded string"
-            )
-
+            raise ValueError("Unsupported image type. Expected either image url or base64 encoded string")
         if format:
             mime_type = format
-            image_format = mime_type.split("/")[1]
-
+            image_format = mime_type.split("/", 1)[1]
         image_format = cls._validate_format(mime_type, image_format)
         return cls._create_bedrock_block(img_bytes, mime_type, image_format)
 
@@ -2599,45 +2600,30 @@ def _convert_to_bedrock_tool_call_invoke(
           "type": "function",
           "function": {
             "name": "get_current_weather",
-            "arguments": "{\n\"location\": \"Boston, MA\"\n}"
+            "arguments": "{
+"location": "Boston, MA"
+}"
           }
         }
       ]
     },
     """
-    """
-    Bedrock tool invokes: 
-    [   
-        {
-            "role": "assistant",
-            "toolUse": {
-                "input": {"location": "Boston, MA", ..},
-                "name": "get_current_weather",
-                "toolUseId": "call_abc123"
-            }
-        }
-    ]
-    """
-    """
-    - json.loads argument
-    - extract name 
-    - extract id
-    """
-
+    # Remove repeated attribute lookups, branch flattening for loop
     try:
-        _parts_list: List[BedrockContentBlock] = []
+        _parts_append = []
+        BedrockContentBlock_ = BedrockContentBlock
+        BedrockToolUseBlock_ = BedrockToolUseBlock
         for tool in tool_calls:
             if "function" in tool:
                 id = tool["id"]
-                name = tool["function"].get("name", "")
-                arguments = tool["function"].get("arguments", "")
+                fdict = tool["function"]
+                name = fdict.get("name", "")
+                arguments = fdict.get("arguments", "")
                 arguments_dict = json.loads(arguments) if arguments else {}
-                bedrock_tool = BedrockToolUseBlock(
-                    input=arguments_dict, name=name, toolUseId=id
-                )
-                bedrock_content_block = BedrockContentBlock(toolUse=bedrock_tool)
-                _parts_list.append(bedrock_content_block)
-        return _parts_list
+                bedrock_tool = BedrockToolUseBlock_(input=arguments_dict, name=name, toolUseId=id)
+                bedrock_content_block = BedrockContentBlock_(toolUse=bedrock_tool)
+                _parts_append.append(bedrock_content_block)
+        return _parts_append
     except Exception as e:
         raise Exception(
             "Unable to convert openai tool calls={} to bedrock tool calls. Received error={}".format(
@@ -2665,49 +2651,21 @@ def _convert_to_bedrock_tool_call_result(
         "content": "function result goes here",
     }
     """
-    """
-    Bedrock result looks like this: 
-    {
-        "role": "user",
-        "content": [
-            {
-                "toolResult": {
-                    "toolUseId": "tooluse_kZJMlvQmRJ6eAyJE5GIl7Q",
-                    "content": [
-                        {
-                            "json": {
-                                "song": "Elemental Hotel",
-                                "artist": "8 Storey Hike"
-                            }
-                        }
-                    ]
-                }
-            }
-        ]
-    }
-    """
-    """
-    - 
-    """
-    content_str: str = ""
-    if isinstance(message["content"], str):
-        content_str = message["content"]
-    elif isinstance(message["content"], List):
-        content_list = message["content"]
-        for content in content_list:
+    # Remove repeated isinstance, type checking
+    content_val = message["content"]
+    if isinstance(content_val, str):
+        content_str = content_val
+    else:
+        # Expect List[dict]
+        content_str = ""
+        for content in content_val:
             if content["type"] == "text":
                 content_str += content["text"]
-    message.get("name", "")
-    id = str(message.get("tool_call_id", str(uuid.uuid4())))
-
+    tool_call_id = message.get("tool_call_id")
+    id = str(tool_call_id if tool_call_id is not None else uuid.uuid4())
     tool_result_content_block = BedrockToolResultContentBlock(text=content_str)
-    tool_result = BedrockToolResultBlock(
-        content=[tool_result_content_block],
-        toolUseId=id,
-    )
-    content_block = BedrockContentBlock(toolResult=tool_result)
-
-    return content_block
+    tool_result = BedrockToolResultBlock(content=[tool_result_content_block], toolUseId=id)
+    return BedrockContentBlock(toolResult=tool_result)
 
 
 def _insert_assistant_continue_message(
@@ -2721,34 +2679,20 @@ def _insert_assistant_continue_message(
 
     Conversation blocks and tool result blocks cannot be provided in the same turn. Issue: https://github.com/BerriAI/litellm/issues/6053
     """
+    append = messages.append
+    BedrockMessageBlock_ = BedrockMessageBlock
+    BedrockContentBlock_ = BedrockContentBlock
     if assistant_continue_message is not None:
         if isinstance(assistant_continue_message, str):
-            messages.append(
-                BedrockMessageBlock(
-                    role="assistant",
-                    content=[BedrockContentBlock(text=assistant_continue_message)],
-                )
-            )
+            append(BedrockMessageBlock_(role="assistant", content=[BedrockContentBlock_(text=assistant_continue_message)]))
         elif isinstance(assistant_continue_message, dict):
             text = convert_content_list_to_str(assistant_continue_message)
-            messages.append(
-                BedrockMessageBlock(
-                    role="assistant",
-                    content=[BedrockContentBlock(text=text)],
-                )
-            )
+            append(BedrockMessageBlock_(role="assistant", content=[BedrockContentBlock_(text=text)]))
     elif litellm.modify_params:
         text = convert_content_list_to_str(
-            cast(ChatCompletionAssistantMessage, DEFAULT_ASSISTANT_CONTINUE_MESSAGE)
+            cast(ChatCompletionAssistantMessage, _get_default_assistant_continue_message())
         )
-        messages.append(
-            BedrockMessageBlock(
-                role="assistant",
-                content=[
-                    BedrockContentBlock(text=text),
-                ],
-            )
-        )
+        append(BedrockMessageBlock_(role="assistant", content=[BedrockContentBlock_(text=text)]))
     return messages
 
 
@@ -2964,42 +2908,20 @@ def get_assistant_message_block_or_continue_message(
 
     Relevant Issue: https://github.com/BerriAI/litellm/issues/7169
     """
+    # Fast path and flat branch
     content_block = message.get("content", None)
-
-    # Handle Base case
-    if content_block is None or (
-        assistant_continue_message is None and litellm.modify_params is False
-    ):
+    if content_block is None or (assistant_continue_message is None and not litellm.modify_params):
         return skip_empty_text_blocks(message=message)
-
-    # Handle string case
     if isinstance(content_block, str):
-        # check if content is empty
         if content_block.strip():
             return message
-        else:
-            if is_non_content_values_set(message):
-                modified_message = message.copy()
-                modified_message["content"] = None
-                return modified_message
-            return return_assistant_continue_message(assistant_continue_message)
-
-    # Handle list case
+        if is_non_content_values_set(message):
+            modified_message = message.copy()
+            modified_message["content"] = None
+            return modified_message
+        return return_assistant_continue_message(assistant_continue_message)
     if isinstance(content_block, list):
-        """
-        CHECK FOR
-            "content": [
-                {
-                "type": "text",
-                "text": ""
-                }
-            ],
-        """
-        return process_empty_text_blocks(
-            message=message, assistant_continue_message=assistant_continue_message
-        )
-
-    # Handle unsupported type
+        return process_empty_text_blocks(message=message, assistant_continue_message=assistant_continue_message)
     raise ValueError(f"Unsupported content type: {type(content_block)}")
 
 
@@ -3249,37 +3171,33 @@ class BedrockConverseMessagesProcessor:
     def translate_thinking_blocks_to_reasoning_content_blocks(
         thinking_blocks: List[ChatCompletionThinkingBlock],
     ) -> List[BedrockContentBlock]:
-        reasoning_content_blocks: List[BedrockContentBlock] = []
-        for thinking_block in thinking_blocks:
-            reasoning_text = thinking_block.get("thinking")
-            reasoning_signature = thinking_block.get("signature")
-            text_block = BedrockConverseReasoningTextBlock(
-                text=reasoning_text or "",
-            )
+        # Memoizations
+        BedrockConverseReasoningTextBlock_ = BedrockConverseReasoningTextBlock
+        BedrockConverseReasoningContentBlock_ = BedrockConverseReasoningContentBlock
+        BedrockContentBlock_ = BedrockContentBlock
+
+        build_append = []
+        for tb in thinking_blocks:
+            reasoning_text = tb.get("thinking")
+            reasoning_signature = tb.get("signature")
+            text_block = BedrockConverseReasoningTextBlock_(text=reasoning_text or "")
             if reasoning_signature is not None:
                 text_block["signature"] = reasoning_signature
-            reasoning_content_block = BedrockConverseReasoningContentBlock(
-                reasoningText=text_block,
+            reasoning_content_block = BedrockConverseReasoningContentBlock_(
+                reasoningText=text_block
             )
-            bedrock_content_block = BedrockContentBlock(
-                reasoningContent=reasoning_content_block
-            )
-            reasoning_content_blocks.append(bedrock_content_block)
-        return reasoning_content_blocks
+            build_append.append(BedrockContentBlock_(reasoningContent=reasoning_content_block))
+        return build_append
 
     @staticmethod
     def _process_file_message(message: ChatCompletionFileObject) -> BedrockContentBlock:
         file_message = message["file"]
         file_data = file_message.get("file_data")
         file_id = file_message.get("file_id")
-
         if file_data is None and file_id is None:
             raise litellm.BadRequestError(
-                message="file_data and file_id cannot both be None. Got={}".format(
-                    message
-                ),
-                model="",
-                llm_provider="bedrock",
+                message="file_data and file_id cannot both be None. Got={}".format(message),
+                model="", llm_provider="bedrock",
             )
         format = file_message.get("format")
         return BedrockImageProcessor.process_image_sync(
@@ -3319,22 +3237,24 @@ class BedrockConverseMessagesProcessor:
 
         Relevant Issue: https://github.com/BerriAI/litellm/issues/9063
         """
+        # Optimize: avoid repeated .get lookups
+        append_apart = assistant_parts.append
+        extend_apart = assistant_parts.extend
         filtered_thinking_blocks = []
         for block in thinking_blocks:
             reasoning_content = block.get("reasoningContent", None)
-            reasoning_text = (
-                reasoning_content.get("reasoningText", None)
-                if reasoning_content is not None
-                else None
-            )
+            if reasoning_content is not None:
+                reasoning_text = reasoning_content.get("reasoningText", None)
+            else:
+                reasoning_text = None
             if reasoning_text and not reasoning_text.get("signature"):
                 reasoning_text_text = reasoning_text["text"]
                 assistants_part = BedrockContentBlock(text=reasoning_text_text)
-                assistant_parts.append(assistants_part)
+                append_apart(assistants_part)
             else:
                 filtered_thinking_blocks.append(block)
-        if len(filtered_thinking_blocks) > 0:
-            assistant_parts.extend(filtered_thinking_blocks)
+        if filtered_thinking_blocks:
+            extend_apart(filtered_thinking_blocks)
         return assistant_parts
 
 
@@ -3354,12 +3274,11 @@ def _bedrock_converse_messages_pt(  # noqa: PLR0915
     - Please ensure that function response turn comes immediately after a function call turn
     - Conversation blocks and tool result blocks cannot be provided in the same turn. Issue: https://github.com/BerriAI/litellm/issues/6053
     """
-
+    # Preallocate, flatten loops, cache access/clauses, avoid unnecessary .copy()/.extend()
     contents: List[BedrockMessageBlock] = []
     msg_i = 0
 
-    ## BASE CASE ##
-    if len(messages) == 0:
+    if not messages:
         raise litellm.BadRequestError(
             message=BAD_MESSAGE_ERROR_STR
             + "bedrock requires at least one non-system message",
@@ -3367,200 +3286,168 @@ def _bedrock_converse_messages_pt(  # noqa: PLR0915
             llm_provider=llm_provider,
         )
 
-    # if initial message is assistant message
-    if messages[0].get("role") is not None and messages[0]["role"] == "assistant":
+    # If first message is assistant, insert user continue
+    if messages[0].get("role") == "assistant":
         if user_continue_message is not None:
             messages.insert(0, user_continue_message)
         elif litellm.modify_params:
-            messages.insert(0, DEFAULT_USER_CONTINUE_MESSAGE)
+            messages.insert(0, _get_default_user_continue_message())
 
-    # if final message is assistant message
-    if messages[-1].get("role") is not None and messages[-1]["role"] == "assistant":
+    if messages[-1].get("role") == "assistant":
         if user_continue_message is not None:
             messages.append(user_continue_message)
         elif litellm.modify_params:
-            messages.append(DEFAULT_USER_CONTINUE_MESSAGE)
+            messages.append(_get_default_user_continue_message())
 
-    while msg_i < len(messages):
+    msg_len = len(messages)
+    get_user_block = get_user_message_block_or_continue_message
+    append_contents = contents.append
+    extend_contents = contents[-1]["content"].extend if contents else None
+    BedrockMessageBlock_ = BedrockMessageBlock
+    BedrockContentBlock_ = BedrockContentBlock
+    litellm_AmazonConverseConfig = litellm.AmazonConverseConfig
+    _get_cache_point_block = litellm_AmazonConverseConfig()._get_cache_point_block
+
+    while msg_i < msg_len:
         user_content: List[BedrockContentBlock] = []
         init_msg_i = msg_i
-        ## MERGE CONSECUTIVE USER CONTENT ##
-        while msg_i < len(messages) and messages[msg_i]["role"] == "user":
-            message_block = get_user_message_block_or_continue_message(
+        # Fast tight user merge
+        while msg_i < msg_len and messages[msg_i]["role"] == "user":
+            message_block = get_user_block(
                 message=messages[msg_i],
                 user_continue_message=user_continue_message,
             )
-            if isinstance(message_block["content"], list):
-                _parts: List[BedrockContentBlock] = []
-                for element in message_block["content"]:
-                    if isinstance(element, dict):
-                        if element["type"] == "text":
-                            _part = BedrockContentBlock(text=element["text"])
-                            _parts.append(_part)
-                        elif element["type"] == "image_url":
-                            format: Optional[str] = None
-                            if isinstance(element["image_url"], dict):
-                                image_url = element["image_url"]["url"]
-                                format = element["image_url"].get("format")
-                            else:
-                                image_url = element["image_url"]
-                            _part = BedrockImageProcessor.process_image_sync(  # type: ignore
-                                image_url=image_url,
-                                format=format,
-                            )
-                            _parts.append(_part)  # type: ignore
-                        elif element["type"] == "file":
-                            _part = (
-                                BedrockConverseMessagesProcessor._process_file_message(
-                                    message=cast(ChatCompletionFileObject, element)
-                                )
-                            )
-                            _parts.append(_part)
-                        _cache_point_block = (
-                            litellm.AmazonConverseConfig()._get_cache_point_block(
-                                message_block=cast(
-                                    OpenAIMessageContentListBlock, element
-                                ),
-                                block_type="content_block",
-                            )
+            c = message_block.get("content")
+            if isinstance(c, list):  # user block with list content
+                _parts = []
+                for element in c:
+                    if not isinstance(element, dict): continue
+                    typ = element["type"]
+                    if typ == "text":
+                        _part = BedrockContentBlock_(text=element["text"])
+                        _parts.append(_part)
+                    elif typ == "image_url":
+                        image_url = element["image_url"]
+                        format_: Optional[str] = None
+                        if isinstance(image_url, dict):
+                            imgurl = image_url["url"]
+                            format_ = image_url.get("format")
+                        else:
+                            imgurl = image_url
+                        _part = BedrockImageProcessor.process_image_sync(
+                            image_url=imgurl, format=format_
                         )
-                        if _cache_point_block is not None:
-                            _parts.append(_cache_point_block)
-                user_content.extend(_parts)
-            elif message_block["content"] and isinstance(message_block["content"], str):
-                _part = BedrockContentBlock(text=messages[msg_i]["content"])
-                _cache_point_block = (
-                    litellm.AmazonConverseConfig()._get_cache_point_block(
-                        message_block, block_type="content_block"
+                        _parts.append(_part)
+                    elif typ == "file":
+                        _part = BedrockConverseMessagesProcessor._process_file_message(
+                            message=cast(ChatCompletionFileObject, element)
+                        )
+                        _parts.append(_part)
+                    _cache_point_block = _get_cache_point_block(
+                        message_block=cast(OpenAIMessageContentListBlock, element),
+                        block_type="content_block",
                     )
+                    if _cache_point_block is not None:
+                        _parts.append(_cache_point_block)
+                user_content.extend(_parts)
+            elif c and isinstance(c, str):  # user block with string content
+                _part = BedrockContentBlock_(text=messages[msg_i]["content"])
+                _cache_point_block2 = _get_cache_point_block(
+                    message_block, block_type="content_block"
                 )
                 user_content.append(_part)
-                if _cache_point_block is not None:
-                    user_content.append(_cache_point_block)
-
+                if _cache_point_block2 is not None:
+                    user_content.append(_cache_point_block2)
             msg_i += 1
         if user_content:
-            if len(contents) > 0 and contents[-1]["role"] == "user":
-                if (
-                    assistant_continue_message is not None
-                    or litellm.modify_params is True
-                ):
-                    # if last message was a 'user' message, then add a dummy assistant message (bedrock requires alternating roles)
+            if contents and contents[-1]["role"] == "user":
+                if assistant_continue_message is not None or litellm.modify_params:
                     contents = _insert_assistant_continue_message(
-                        messages=contents,
-                        assistant_continue_message=assistant_continue_message,
+                        messages=contents, assistant_continue_message=assistant_continue_message
                     )
-                    contents.append(
-                        BedrockMessageBlock(role="user", content=user_content)
-                    )
+                    append_contents(BedrockMessageBlock_(role="user", content=user_content))
                 else:
                     verbose_logger.warning(
                         "Potential consecutive user/tool blocks. Trying to merge. If error occurs, please set a 'assistant_continue_message' or set 'modify_params=True' to insert a dummy assistant message for bedrock calls."
                     )
                     contents[-1]["content"].extend(user_content)
             else:
-                contents.append(BedrockMessageBlock(role="user", content=user_content))
+                append_contents(BedrockMessageBlock_(role="user", content=user_content))
 
-        ## MERGE CONSECUTIVE TOOL CALL MESSAGES ##
         tool_content: List[BedrockContentBlock] = []
-        while msg_i < len(messages) and messages[msg_i]["role"] == "tool":
+        while msg_i < msg_len and messages[msg_i]["role"] == "tool":
             tool_call_result = _convert_to_bedrock_tool_call_result(messages[msg_i])
-
             tool_content.append(tool_call_result)
             msg_i += 1
         if tool_content:
-            # if last message was a 'user' message, then add a blank assistant message (bedrock requires alternating roles)
-            if len(contents) > 0 and contents[-1]["role"] == "user":
-                if (
-                    assistant_continue_message is not None
-                    or litellm.modify_params is True
-                ):
-                    # if last message was a 'user' message, then add a dummy assistant message (bedrock requires alternating roles)
+            # Same alternation logic used for user blocks
+            if contents and contents[-1]["role"] == "user":
+                if assistant_continue_message is not None or litellm.modify_params:
                     contents = _insert_assistant_continue_message(
-                        messages=contents,
-                        assistant_continue_message=assistant_continue_message,
+                        messages=contents, assistant_continue_message=assistant_continue_message
                     )
-                    contents.append(
-                        BedrockMessageBlock(role="user", content=tool_content)
-                    )
+                    append_contents(BedrockMessageBlock_(role="user", content=tool_content))
                 else:
                     verbose_logger.warning(
                         "Potential consecutive user/tool blocks. Trying to merge. If error occurs, please set a 'assistant_continue_message' or set 'modify_params=True' to insert a dummy assistant message for bedrock calls."
                     )
                     contents[-1]["content"].extend(tool_content)
             else:
-                contents.append(BedrockMessageBlock(role="user", content=tool_content))
+                append_contents(BedrockMessageBlock_(role="user", content=tool_content))
+
         assistant_content: List[BedrockContentBlock] = []
-        ## MERGE CONSECUTIVE ASSISTANT CONTENT ##
-        while msg_i < len(messages) and messages[msg_i]["role"] == "assistant":
+        while msg_i < msg_len and messages[msg_i]["role"] == "assistant":
             assistant_message_block = get_assistant_message_block_or_continue_message(
-                message=messages[msg_i],
-                assistant_continue_message=assistant_continue_message,
+                message=messages[msg_i], assistant_continue_message=assistant_continue_message,
             )
             _assistant_content = assistant_message_block.get("content", None)
             thinking_blocks = cast(
                 Optional[List[ChatCompletionThinkingBlock]],
                 assistant_message_block.get("thinking_blocks"),
             )
-
             if thinking_blocks is not None:
                 converted_thinking_blocks = BedrockConverseMessagesProcessor.translate_thinking_blocks_to_reasoning_content_blocks(
                     thinking_blocks
                 )
                 assistant_content = BedrockConverseMessagesProcessor.add_thinking_blocks_to_assistant_content(
-                    thinking_blocks=converted_thinking_blocks,
-                    assistant_parts=assistant_content,
+                    thinking_blocks=converted_thinking_blocks, assistant_parts=assistant_content,
                 )
-
             if _assistant_content is not None and isinstance(_assistant_content, list):
-                assistants_parts: List[BedrockContentBlock] = []
+                assistants_parts = []
                 for element in _assistant_content:
-                    if isinstance(element, dict):
-                        if element["type"] == "thinking":
-                            thinking_block = BedrockConverseMessagesProcessor.translate_thinking_blocks_to_reasoning_content_blocks(
-                                thinking_blocks=[
-                                    cast(ChatCompletionThinkingBlock, element)
-                                ]
-                            )
-                            assistants_parts = BedrockConverseMessagesProcessor.add_thinking_blocks_to_assistant_content(
-                                thinking_blocks=thinking_block,
-                                assistant_parts=assistants_parts,
-                            )
-                        elif element["type"] == "text":
-                            assistants_part = BedrockContentBlock(text=element["text"])
-                            assistants_parts.append(assistants_part)
-                        elif element["type"] == "image_url":
-                            if isinstance(element["image_url"], dict):
-                                image_url = element["image_url"]["url"]
-                            else:
-                                image_url = element["image_url"]
-                            assistants_part = BedrockImageProcessor.process_image_sync(  # type: ignore
-                                image_url=image_url
-                            )
-                            assistants_parts.append(assistants_part)
+                    if not isinstance(element, dict): continue
+                    typ = element["type"]
+                    if typ == "thinking":
+                        thinking_block = BedrockConverseMessagesProcessor.translate_thinking_blocks_to_reasoning_content_blocks(
+                            thinking_blocks=[cast(ChatCompletionThinkingBlock, element)]
+                        )
+                        assistants_parts = BedrockConverseMessagesProcessor.add_thinking_blocks_to_assistant_content(
+                            thinking_blocks=thinking_block,
+                            assistant_parts=assistants_parts,
+                        )
+                    elif typ == "text":
+                        assistants_part = BedrockContentBlock_(text=element["text"])
+                        assistants_parts.append(assistants_part)
+                    elif typ == "image_url":
+                        image_url = element["image_url"]
+                        if isinstance(image_url, dict):
+                            image_url = image_url["url"]
+                        assistants_part = BedrockImageProcessor.process_image_sync(image_url=image_url)
+                        assistants_parts.append(assistants_part)
                 assistant_content.extend(assistants_parts)
             elif _assistant_content is not None and isinstance(_assistant_content, str):
-                assistant_content.append(BedrockContentBlock(text=_assistant_content))
+                assistant_content.append(BedrockContentBlock_(text=_assistant_content))
             _tool_calls = assistant_message_block.get("tool_calls", [])
             if _tool_calls:
-                assistant_content.extend(
-                    _convert_to_bedrock_tool_call_invoke(_tool_calls)
-                )
-
+                assistant_content.extend(_convert_to_bedrock_tool_call_invoke(_tool_calls))
             msg_i += 1
-
         if assistant_content:
-            contents.append(
-                BedrockMessageBlock(role="assistant", content=assistant_content)
-            )
-
-        if msg_i == init_msg_i:  # prevent infinite loops
+            append_contents(BedrockMessageBlock_(role="assistant", content=assistant_content))
+        if msg_i == init_msg_i:  # infinite loop prevention
             raise litellm.BadRequestError(
                 message=BAD_MESSAGE_ERROR_STR + f"passed in {messages[msg_i]}",
-                model=model,
-                llm_provider=llm_provider,
+                model=model, llm_provider=llm_provider,
             )
-
     return contents
 
 
@@ -3953,3 +3840,23 @@ def get_attribute_or_key(tool_or_function, attribute, default=None):
     if hasattr(tool_or_function, attribute):
         return getattr(tool_or_function, attribute)
     return tool_or_function.get(attribute, default)
+
+def _get_default_user_continue_message():
+    global _DEFAULT_USER_CONTINUE_MESSAGE
+    if _DEFAULT_USER_CONTINUE_MESSAGE is None:
+        from litellm.litellm_core_utils.prompt_templates.factory import \
+            DEFAULT_USER_CONTINUE_MESSAGE
+        _DEFAULT_USER_CONTINUE_MESSAGE = DEFAULT_USER_CONTINUE_MESSAGE
+    return _DEFAULT_USER_CONTINUE_MESSAGE
+
+def _get_default_assistant_continue_message():
+    global _DEFAULT_ASSISTANT_CONTINUE_MESSAGE
+    if _DEFAULT_ASSISTANT_CONTINUE_MESSAGE is None:
+        from litellm.litellm_core_utils.prompt_templates.factory import \
+            DEFAULT_ASSISTANT_CONTINUE_MESSAGE
+        _DEFAULT_ASSISTANT_CONTINUE_MESSAGE = DEFAULT_ASSISTANT_CONTINUE_MESSAGE
+    return _DEFAULT_ASSISTANT_CONTINUE_MESSAGE
+
+_DEFAULT_USER_CONTINUE_MESSAGE = None
+
+_DEFAULT_ASSISTANT_CONTINUE_MESSAGE = None
