@@ -14,7 +14,7 @@ import litellm.types.llms
 from litellm import verbose_logger
 from litellm.llms.custom_httpx.http_handler import HTTPHandler, get_async_httpx_client
 from litellm.types.llms.anthropic import *
-from litellm.types.llms.bedrock import MessageBlock as BedrockMessageBlock
+from litellm.types.llms.bedrock import ContentBlock as BedrockContentBlock, MessageBlock as BedrockMessageBlock
 from litellm.types.llms.custom_http import httpxSpecialProvider
 from litellm.types.llms.ollama import OllamaVisionModelObject
 from litellm.types.llms.openai import (
@@ -3319,22 +3319,16 @@ class BedrockConverseMessagesProcessor:
 
         Relevant Issue: https://github.com/BerriAI/litellm/issues/9063
         """
-        filtered_thinking_blocks = []
+        # Combined processing: branch only once per block
         for block in thinking_blocks:
-            reasoning_content = block.get("reasoningContent", None)
-            reasoning_text = (
-                reasoning_content.get("reasoningText", None)
-                if reasoning_content is not None
-                else None
-            )
-            if reasoning_text and not reasoning_text.get("signature"):
-                reasoning_text_text = reasoning_text["text"]
-                assistants_part = BedrockContentBlock(text=reasoning_text_text)
-                assistant_parts.append(assistants_part)
-            else:
-                filtered_thinking_blocks.append(block)
-        if len(filtered_thinking_blocks) > 0:
-            assistant_parts.extend(filtered_thinking_blocks)
+            reasoning_content = block.get("reasoningContent")
+            if reasoning_content is not None:
+                reasoning_text = reasoning_content.get("reasoningText")
+                if reasoning_text and not reasoning_text.get("signature"):
+                    assistants_part = BedrockContentBlock(text=reasoning_text["text"])
+                    assistant_parts.append(assistants_part)
+                    continue  # skip adding to filtered_thinking_blocks
+            assistant_parts.append(block)
         return assistant_parts
 
 
