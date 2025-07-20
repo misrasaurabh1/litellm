@@ -197,10 +197,16 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         presence_penalty: Optional[float] = None,
         seed: Optional[int] = None,
     ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
+        self.temperature = temperature
+        self.max_output_tokens = max_output_tokens
+        self.top_p = top_p
+        self.top_k = top_k
+        self.response_mime_type = response_mime_type
+        self.candidate_count = candidate_count
+        self.stop_sequences = stop_sequences
+        self.frequency_penalty = frequency_penalty
+        self.presence_penalty = presence_penalty
+        self.seed = seed
 
     @classmethod
     def get_config(cls):
@@ -750,44 +756,41 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
     def get_assistant_content_message(
         self, parts: List[HttpxPartType]
     ) -> Tuple[Optional[str], Optional[str]]:
-        content_str: Optional[str] = None
-        reasoning_content_str: Optional[str] = None
+        content_list = []
+        reasoning_list = []
 
         for part in parts:
-            _content_str = ""
-            if "text" in part:
-                text_content = part["text"]
-                # Check if text content is audio data URI - if so, exclude from text content
+            _content_str = None
+            text_content = part.get("text")
+            if text_content is not None:
+                # Exclude audio data URIs from text content
                 if text_content.startswith("data:audio") and ";base64," in text_content:
                     try:
                         if is_base64_encoded(text_content):
-                            media_type, _ = text_content.split("data:")[1].split(
-                                ";base64,"
-                            )
+                            media_type = text_content.split("data:")[1].split(";base64,", 1)[0]
                             if media_type.startswith("audio/"):
                                 continue
                     except (ValueError, IndexError):
-                        # If parsing fails, treat as regular text
                         pass
-                _content_str += text_content
-            elif "inlineData" in part:
-                mime_type = part["inlineData"]["mimeType"]
-                data = part["inlineData"]["data"]
-                # Check if inline data is audio - if so, exclude from text content
-                if mime_type.startswith("audio/"):
-                    continue
-                _content_str += "data:{};base64,{}".format(mime_type, data)
+                _content_str = text_content
+            else:
+                inline_data = part.get("inlineData")
+                if inline_data is not None:
+                    mime_type = inline_data["mimeType"]
+                    data = inline_data["data"]
+                    # Exclude audio inline data
+                    if mime_type.startswith("audio/"):
+                        continue
+                    _content_str = f"data:{mime_type};base64,{data}"
 
-            if len(_content_str) > 0:
+            if _content_str:
                 if part.get("thought") is True:
-                    if reasoning_content_str is None:
-                        reasoning_content_str = ""
-                    reasoning_content_str += _content_str
+                    reasoning_list.append(_content_str)
                 else:
-                    if content_str is None:
-                        content_str = ""
-                    content_str += _content_str
+                    content_list.append(_content_str)
 
+        content_str = "".join(content_list) if content_list else None
+        reasoning_content_str = "".join(reasoning_list) if reasoning_list else None
         return content_str, reasoning_content_str
 
     def _extract_audio_response_from_parts(
