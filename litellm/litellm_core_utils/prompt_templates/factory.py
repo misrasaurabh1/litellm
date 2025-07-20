@@ -1810,15 +1810,17 @@ def parse_xml_params(xml_content, json_schema: Optional[dict] = None):
 
 
 def get_system_prompt(messages):
-    system_prompt_indices = []
-    system_prompt = ""
-    for idx, message in enumerate(messages):
+    system_prompt_parts = []
+    retained = []
+    for message in messages:
         if message["role"] == "system":
-            system_prompt += message["content"]
-            system_prompt_indices.append(idx)
-    if len(system_prompt_indices) > 0:
-        for idx in reversed(system_prompt_indices):
-            messages.pop(idx)
+            system_prompt_parts.append(message["content"])
+        else:
+            retained.append(message)
+    system_prompt = "".join(system_prompt_parts)
+    if len(system_prompt_parts) > 0:
+        messages.clear()
+        messages.extend(retained)
     return system_prompt, messages
 
 
