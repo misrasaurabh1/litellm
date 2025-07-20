@@ -37,6 +37,8 @@ from litellm.types.utils import GenericImageParsingChunk
 
 from .common_utils import convert_content_list_to_str, is_non_content_values_set
 from .image_handling import convert_url_to_base64
+import base64
+import httpx
 
 
 def default_pt(messages):
@@ -2395,17 +2397,16 @@ class BedrockImageProcessor:
 
     @staticmethod
     def _post_call_image_processing(response: httpx.Response) -> Tuple[str, str]:
-        # Check the response's content type to ensure it is an image
-        content_type = response.headers.get("content-type")
+        # Faster access and normalization for 'content-type'
+        content_type = response.headers.get("content-type") or response.headers.get("Content-Type")
         if not content_type:
-            raise ValueError(
-                f"URL does not contain content-type (content-type: {content_type})"
-            )
-        content_type = _parse_content_type(content_type)
+            raise ValueError("URL does not contain content-type (content-type: None)")
+        
+        # Inline parsing of content-type (avoid email.message.Message for speed)
+        content_type = content_type.split(';', 1)[0].strip().lower()
 
-        # Convert the image content to base64 bytes
+        # Efficient base64 encoding of image content
         base64_bytes = base64.b64encode(response.content).decode("utf-8")
-
         return base64_bytes, content_type
 
     @staticmethod
