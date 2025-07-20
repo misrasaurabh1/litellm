@@ -2146,29 +2146,34 @@ def cohere_message_pt(messages: list):
 
 def amazon_titan_pt(
     messages: list,
-):  # format - https://github.com/BerriAI/litellm/issues/1896
+):
     """
     Amazon Titan uses 'User:' and 'Bot: in it's prompt template
     """
 
-    class AmazonTitanConstants(Enum):
-        HUMAN_PROMPT = "\n\nUser: "  # Assuming this is similar to Anthropic prompt formatting, since amazon titan's prompt formatting is currently undocumented
-        AI_PROMPT = "\n\nBot: "
+    HUMAN_PROMPT = "\n\nUser: "  # Assuming this is similar to Anthropic prompt formatting, since amazon titan's prompt formatting is currently undocumented
+    AI_PROMPT = "\n\nBot: "
 
-    prompt = ""
+    prompt_parts = []
+    needs_human_prefix = False
+
     for idx, message in enumerate(messages):
-        if message["role"] == "user":
-            prompt += f"{AmazonTitanConstants.HUMAN_PROMPT.value}{message['content']}"
-        elif message["role"] == "system":
-            prompt += f"{AmazonTitanConstants.HUMAN_PROMPT.value}<admin>{message['content']}</admin>"
-        else:
-            prompt += f"{AmazonTitanConstants.AI_PROMPT.value}{message['content']}"
-        if (
-            idx == 0 and message["role"] == "assistant"
-        ):  # ensure the prompt always starts with `\n\nHuman: `
-            prompt = f"{AmazonTitanConstants.HUMAN_PROMPT.value}" + prompt
+        role = message["role"]
+        content = message["content"]
+        if role == "user":
+            prompt_parts.append(f"{HUMAN_PROMPT}{content}")
+        elif role == "system":
+            prompt_parts.append(f"{HUMAN_PROMPT}<admin>{content}</admin>")
+        else:  # assistant
+            prompt_parts.append(f"{AI_PROMPT}{content}")
+        if idx == 0 and role == "assistant":
+            needs_human_prefix = True  # ensure the prompt always starts with `\n\nHuman: `
+
+    prompt = "".join(prompt_parts)
+    if needs_human_prefix:
+        prompt = f"{HUMAN_PROMPT}{prompt}"
     if messages[-1]["role"] != "assistant":
-        prompt += f"{AmazonTitanConstants.AI_PROMPT.value}"
+        prompt += AI_PROMPT
     return prompt
 
 
