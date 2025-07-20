@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Union, Any, List, Optional, Tuple, cast, overload
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -14,7 +14,7 @@ import litellm.types.llms
 from litellm import verbose_logger
 from litellm.llms.custom_httpx.http_handler import HTTPHandler, get_async_httpx_client
 from litellm.types.llms.anthropic import *
-from litellm.types.llms.bedrock import MessageBlock as BedrockMessageBlock
+from litellm.types.llms.bedrock import ToolBlock as BedrockToolBlock, ToolInputSchemaBlock as BedrockToolInputSchemaBlock, ToolJsonSchemaBlock as BedrockToolJsonSchemaBlock, ToolSpecBlock as BedrockToolSpecBlock, MessageBlock as BedrockMessageBlock
 from litellm.types.llms.custom_http import httpxSpecialProvider
 from litellm.types.llms.ollama import OllamaVisionModelObject
 from litellm.types.llms.openai import (
@@ -37,6 +37,7 @@ from litellm.types.utils import GenericImageParsingChunk
 
 from .common_utils import convert_content_list_to_str, is_non_content_values_set
 from .image_handling import convert_url_to_base64
+import string
 
 
 def default_pt(messages):
@@ -3569,41 +3570,25 @@ def make_valid_bedrock_tool_name(input_tool_name: str) -> str:
     Replaces any invalid characters in the input tool name with underscores
     and ensures the resulting string is a valid identifier for Bedrock tools
     """
-
-    def replace_invalid(char):
-        """
-        Bedrock tool names only supports alpha-numeric characters and underscores
-        """
-        if char.isalnum() or char == "_":
-            return char
-        return "_"
-
-    # If the string is empty, return a default valid identifier
-    if input_tool_name is None or len(input_tool_name) == 0:
+    if input_tool_name is None or not input_tool_name:
         return input_tool_name
-    bedrock_tool_name = copy.copy(input_tool_name)
-    # If it doesn't start with a letter, prepend 'a'
+    # No need for copy, str is immutable
+    bedrock_tool_name = input_tool_name
     if not bedrock_tool_name[0].isalpha():
         bedrock_tool_name = "a" + bedrock_tool_name
-
-    # Replace any invalid characters with underscores
-    valid_string = "".join(replace_invalid(char) for char in bedrock_tool_name)
-
+    # Fast translation using the static translation table
+    valid_string = bedrock_tool_name.translate(_trans_table)
     if input_tool_name != valid_string:
-        # passed tool name was formatted to become valid
-        # store it internally so we can use for the response
         litellm.bedrock_tool_name_mappings.set_cache(
             key=valid_string, value=input_tool_name
         )
-
     return valid_string
 
 
 def add_cache_point_tool_block(tool: dict) -> Optional[BedrockToolBlock]:
-    cache_control = tool.get("cache_control", None)
+    cache_control = tool.get("cache_control")
     if cache_control is not None:
-        cache_point = cache_control.get("type", "ephemeral")
-        if cache_point == "ephemeral":
+        if cache_control.get("type", "ephemeral") == "ephemeral":
             return {"cachePoint": {"type": "default"}}
     return None
 
@@ -3632,53 +3617,36 @@ def _bedrock_tools_pt(tools: List) -> List[BedrockToolBlock]:
         }
     ]
     """
-    """
-    Bedrock toolConfig looks like: 
-    "tools": [
-        {
-            "toolSpec": {
-                "name": "top_song",
-                "description": "Get the most popular song played on a radio station.",
-                "inputSchema": {
-                    "json": {
-                        "type": "object",
-                        "properties": {
-                            "sign": {
-                                "type": "string",
-                                "description": "The call sign for the radio station for which you want the most popular song. Example calls signs are WZPZ, and WKRP."
-                            }
-                        },
-                        "required": [
-                            "sign"
-                        ]
-                    }
-                }
-            }
-        }
-    ]
-    """
-    from litellm.litellm_core_utils.prompt_templates.common_utils import unpack_defs
+    from litellm.litellm_core_utils.prompt_templates.common_utils import \
+        unpack_defs
 
     tool_block_list: List[BedrockToolBlock] = []
     for tool in tools:
-        parameters = tool.get("function", {}).get(
-            "parameters", {"type": "object", "properties": {}}
-        )
-        name = tool.get("function", {}).get("name", "")
+        function = tool.get("function", {})
+        # Use fast dict get without construction unless needed, and pop only if $defs present
+        parameters = function.get("parameters")
+        if parameters is None:
+            parameters = {"type": "object", "properties": {}}
+        # Pop $defs only if actually present
+        defs = parameters.get("$defs")
+        if defs is not None:
+            defs = parameters.pop("$defs")
+        else:
+            defs = {}
 
-        # related issue: https://github.com/BerriAI/litellm/issues/5007
-        # Bedrock tool names must satisfy regular expression pattern: [a-zA-Z][a-zA-Z0-9_]* ensure this is true
+        # Since defs are just small jsonish schema, just a shallow copy is sufficient for items()
+        defs_copy = dict(defs) if defs else {}
+
+        name = function.get("name", "")
         name = make_valid_bedrock_tool_name(input_tool_name=name)
-        description = tool.get("function", {}).get(
-            "description", name
-        )  # converse api requires a description
+        # converse api requires a description
+        description = function.get("description", name)
 
-        defs = parameters.pop("$defs", {})
-        defs_copy = copy.deepcopy(defs)
         # flatten the defs
-        for _, value in defs_copy.items():
+        for value in defs_copy.values():
             unpack_defs(value, defs_copy)
         unpack_defs(parameters, defs_copy)
+
         tool_input_schema = BedrockToolInputSchemaBlock(
             json=BedrockToolJsonSchemaBlock(
                 type=parameters.get("type", ""),
@@ -3696,7 +3664,6 @@ def _bedrock_tools_pt(tools: List) -> List[BedrockToolBlock]:
         cache_point_tool_block = add_cache_point_tool_block(tool)
         if cache_point_tool_block is not None:
             tool_block_list.append(cache_point_tool_block)
-
     return tool_block_list
 
 
@@ -3953,3 +3920,7 @@ def get_attribute_or_key(tool_or_function, attribute, default=None):
     if hasattr(tool_or_function, attribute):
         return getattr(tool_or_function, attribute)
     return tool_or_function.get(attribute, default)
+
+_alphanum_underscore = set(string.ascii_letters + string.digits + "_")
+
+_trans_table = str.maketrans({c: "_" for c in map(chr, range(256)) if c not in _alphanum_underscore})
