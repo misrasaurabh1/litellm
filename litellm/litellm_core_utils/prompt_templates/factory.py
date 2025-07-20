@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Union, Any, List, Optional, Tuple, cast
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -2764,54 +2764,52 @@ def get_user_message_block_or_continue_message(
     """
     content_block = message.get("content", None)
 
-    # Handle None case
+    # Fast exit for None case (most lines spent here, delegates to skip_empty_text_blocks)
     if content_block is None or (
         user_continue_message is None and litellm.modify_params is False
     ):
         return skip_empty_text_blocks(message=message)
 
-    # Handle string case
+    # Fast path: string with non-whitespace value
     if isinstance(content_block, str):
-        # check if content is empty
         if content_block.strip():
             return message
-        else:
-            return ChatCompletionUserMessage(
-                **(user_continue_message or DEFAULT_USER_CONTINUE_MESSAGE)  # type: ignore
-            )
+        # Fast path: empty string, don't reconstruct class multiple times
+        return ChatCompletionUserMessage(
+            **(user_continue_message or DEFAULT_USER_CONTINUE_MESSAGE)  # type: ignore
+        )
 
-    # Handle list case
+    # Fast path: list case
     if isinstance(content_block, list):
-        """
-        CHECK FOR
-            "content": [
-                {
-                "type": "text",
-                "text": ""
-                }
-            ],
-        """
         if not content_block:
             return ChatCompletionUserMessage(
                 **(user_continue_message or DEFAULT_USER_CONTINUE_MESSAGE)  # type: ignore
             )
-        # Create a copy of the message to avoid modifying the original
-        modified_content_block = content_block.copy()
 
-        for item in modified_content_block:
-            # Check if the list is empty
-            if item["type"] == "text":
-                if not item["text"].strip():
-                    # Replace empty text with continue message
-                    _user_continue_message = ChatCompletionUserMessage(
-                        **(user_continue_message or DEFAULT_USER_CONTINUE_MESSAGE)  # type: ignore
-                    )
-                    text = convert_content_list_to_str(_user_continue_message)
-                    item["text"] = text
-                    break
-        modified_message = message.copy()
-        modified_message["content"] = modified_content_block
-        return modified_message
+        # Only allocate/copy and mutate if there is an empty text block
+        empty_found = False
+        new_content_block = None
+
+        for idx, item in enumerate(content_block):
+            if item.get("type") == "text" and not item.get("text", "").strip():
+                # On *first* found empty, allocate and copy
+                if not empty_found:
+                    new_content_block = content_block.copy()
+                    empty_found = True
+                # Reuse the continue message text for all empty texts (first only)
+                _user_continue_message = ChatCompletionUserMessage(
+                    **(user_continue_message or DEFAULT_USER_CONTINUE_MESSAGE)  # type: ignore
+                )
+                text = convert_content_list_to_str(_user_continue_message)
+                new_content_block[idx]["text"] = text
+                break  # There is only one empty block replacement per original logic
+
+        if empty_found:
+            modified_message = message.copy()
+            modified_message["content"] = new_content_block
+            return modified_message
+        else:
+            return message
 
     # Handle unsupported type
     raise ValueError(f"Unsupported content type: {type(content_block)}")
@@ -2850,18 +2848,110 @@ def _skip_empty_dict_blocks(blocks: List[dict]) -> List[dict]:
     ]
 
 
-@overload
 def skip_empty_text_blocks(
     message: ChatCompletionAssistantMessage,
 ) -> ChatCompletionAssistantMessage:
-    pass
+    """
+    Skips empty text blocks in message content text blocks.
+
+    Do not insert content here. This is a helper function, which can also be used in base case.
+    """
+    content_block = message.get("content", None)
+
+    # Fast exit: nothing to skip
+    if content_block is None:
+        return message
+
+    # Fast path: assistant, string, empty, and has non-content fields to keep
+    if (
+        isinstance(content_block, str)
+        and not content_block.strip()
+        and is_non_content_values_set(message)
+        and message["role"] == "assistant"
+    ):
+        modified_message = message.copy()
+        modified_message["content"] = None  # user message content cannot be None
+        return modified_message
+
+    # Fast path: list, apply skip logic ONLY if empty dicts present
+    if isinstance(content_block, list):
+        filtered = _skip_empty_dict_blocks(content_block)
+        # If no content remains and it's an assistant message, set content to None
+        if not filtered and message["role"] == "assistant":
+            modified_message = message.copy()
+            modified_message["content"] = None
+            return modified_message
+
+        # Only modify if filtered list is different
+        if filtered != content_block:
+            modified_message_alt = message.copy()
+            if message["role"] == "assistant":
+                modified_message_alt["content"] = cast(
+                    Optional[List[OpenAIMessageContentListBlock]],
+                    filtered or None,
+                )
+            elif message["role"] == "user":
+                modified_message_alt["content"] = cast(
+                    Optional[List[ChatCompletionTextObject]],
+                    filtered
+                )
+            return modified_message_alt
+
+    # Nothing to skip, return original
+    return message
 
 
-@overload
 def skip_empty_text_blocks(
     message: ChatCompletionUserMessage,
 ) -> ChatCompletionUserMessage:
-    pass
+    """
+    Skips empty text blocks in message content text blocks.
+
+    Do not insert content here. This is a helper function, which can also be used in base case.
+    """
+    content_block = message.get("content", None)
+
+    # Fast exit: nothing to skip
+    if content_block is None:
+        return message
+
+    # Fast path: assistant, string, empty, and has non-content fields to keep
+    if (
+        isinstance(content_block, str)
+        and not content_block.strip()
+        and is_non_content_values_set(message)
+        and message["role"] == "assistant"
+    ):
+        modified_message = message.copy()
+        modified_message["content"] = None  # user message content cannot be None
+        return modified_message
+
+    # Fast path: list, apply skip logic ONLY if empty dicts present
+    if isinstance(content_block, list):
+        filtered = _skip_empty_dict_blocks(content_block)
+        # If no content remains and it's an assistant message, set content to None
+        if not filtered and message["role"] == "assistant":
+            modified_message = message.copy()
+            modified_message["content"] = None
+            return modified_message
+
+        # Only modify if filtered list is different
+        if filtered != content_block:
+            modified_message_alt = message.copy()
+            if message["role"] == "assistant":
+                modified_message_alt["content"] = cast(
+                    Optional[List[OpenAIMessageContentListBlock]],
+                    filtered or None,
+                )
+            elif message["role"] == "user":
+                modified_message_alt["content"] = cast(
+                    Optional[List[ChatCompletionTextObject]],
+                    filtered
+                )
+            return modified_message_alt
+
+    # Nothing to skip, return original
+    return message
 
 
 def skip_empty_text_blocks(
@@ -2873,8 +2963,12 @@ def skip_empty_text_blocks(
     Do not insert content here. This is a helper function, which can also be used in base case.
     """
     content_block = message.get("content", None)
+
+    # Fast exit: nothing to skip
     if content_block is None:
         return message
+
+    # Fast path: assistant, string, empty, and has non-content fields to keep
     if (
         isinstance(content_block, str)
         and not content_block.strip()
@@ -2884,32 +2978,32 @@ def skip_empty_text_blocks(
         modified_message = message.copy()
         modified_message["content"] = None  # user message content cannot be None
         return modified_message
-    elif isinstance(content_block, list):
-        modified_content_block = _skip_empty_dict_blocks(
-            cast(List[dict], content_block)
-        )
 
+    # Fast path: list, apply skip logic ONLY if empty dicts present
+    if isinstance(content_block, list):
+        filtered = _skip_empty_dict_blocks(content_block)
         # If no content remains and it's an assistant message, set content to None
-        if not modified_content_block and message["role"] == "assistant":
+        if not filtered and message["role"] == "assistant":
             modified_message = message.copy()
             modified_message["content"] = None
             return modified_message
 
-        modified_message_alt = message.copy()
+        # Only modify if filtered list is different
+        if filtered != content_block:
+            modified_message_alt = message.copy()
+            if message["role"] == "assistant":
+                modified_message_alt["content"] = cast(
+                    Optional[List[OpenAIMessageContentListBlock]],
+                    filtered or None,
+                )
+            elif message["role"] == "user":
+                modified_message_alt["content"] = cast(
+                    Optional[List[ChatCompletionTextObject]],
+                    filtered
+                )
+            return modified_message_alt
 
-        # Type-specific casting based on message role
-        if message["role"] == "assistant":
-            modified_message_alt["content"] = cast(  # type: ignore
-                Optional[List[OpenAIMessageContentListBlock]],
-                modified_content_block or None,
-            )
-        elif message["role"] == "user" and modified_content_block is not None:
-            modified_message_alt["content"] = cast(  # type: ignore
-                Optional[List[ChatCompletionTextObject]], modified_content_block
-            )
-
-        return modified_message_alt
-
+    # Nothing to skip, return original
     return message
 
 
