@@ -3770,44 +3770,61 @@ def custom_prompt(
     bos_token: str = "",
     eos_token: str = "",
 ) -> str:
-    prompt = bos_token + initial_prompt_value
+    # Use local references for frequently used builtins
+    local_isinstance = isinstance
+    str_type = str
+    list_type = list
+    role_pre_msg = "pre_message"
+    role_post_msg = "post_message"
+    append = list.append
+
+    prompt_parts = []
+    prompt_parts_append = prompt_parts.append
+    prompt_parts_append(bos_token)
+    prompt_parts_append(initial_prompt_value)
     bos_open = True
-    ## a bos token is at the start of a system / human message
-    ## an eos token is at the end of the assistant response to the message
+
+    rdict = role_dict
+    system_or_human = {"system", "human"}
+    assistant_role = "assistant"
+
     for message in messages:
         role = message["role"]
 
-        if role in ["system", "human"] and not bos_open:
-            prompt += bos_token
+        if role in system_or_human and not bos_open:
+            prompt_parts_append(bos_token)
             bos_open = True
 
-        pre_message_str = (
-            role_dict[role]["pre_message"]
-            if role in role_dict and "pre_message" in role_dict[role]
-            else ""
-        )
-        post_message_str = (
-            role_dict[role]["post_message"]
-            if role in role_dict and "post_message" in role_dict[role]
-            else ""
-        )
-        if isinstance(message["content"], str):
-            prompt += pre_message_str + message["content"] + post_message_str
-        elif isinstance(message["content"], list):
-            text_str = ""
-            for content in message["content"]:
-                if content.get("text", None) is not None and isinstance(
-                    content["text"], str
-                ):
-                    text_str += content["text"]
-            prompt += pre_message_str + text_str + post_message_str
+        role_entry = rdict.get(role)
+        if role_entry:
+            pre_message_str = role_entry.get(role_pre_msg, "")
+            post_message_str = role_entry.get(role_post_msg, "")
+        else:
+            pre_message_str = ""
+            post_message_str = ""
 
-        if role == "assistant":
-            prompt += eos_token
+        content = message["content"]
+        if local_isinstance(content, str_type):
+            prompt_parts_append(pre_message_str)
+            prompt_parts_append(content)
+            prompt_parts_append(post_message_str)
+        elif local_isinstance(content, list_type):
+            # Build text_str quickly using generator expression
+            text_str = "".join(
+                c["text"]
+                for c in content
+                if c.get("text") is not None and local_isinstance(c["text"], str_type)
+            )
+            prompt_parts_append(pre_message_str)
+            prompt_parts_append(text_str)
+            prompt_parts_append(post_message_str)
+
+        if role == assistant_role:
+            prompt_parts_append(eos_token)
             bos_open = False
 
-    prompt += final_prompt_value
-    return prompt
+    prompt_parts_append(final_prompt_value)
+    return "".join(prompt_parts)
 
 
 def prompt_factory(
