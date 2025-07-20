@@ -183,7 +183,6 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
     frequency_penalty: Optional[float] = None
     presence_penalty: Optional[float] = None
     seed: Optional[int] = None
-
     def __init__(
         self,
         temperature: Optional[float] = None,
@@ -197,10 +196,27 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         presence_penalty: Optional[float] = None,
         seed: Optional[int] = None,
     ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
+        # Efficiently set only provided parameters as instance attributes
+        if temperature is not None:
+            self.temperature = temperature
+        if max_output_tokens is not None:
+            self.max_output_tokens = max_output_tokens
+        if top_p is not None:
+            self.top_p = top_p
+        if top_k is not None:
+            self.top_k = top_k
+        if response_mime_type is not None:
+            self.response_mime_type = response_mime_type
+        if candidate_count is not None:
+            self.candidate_count = candidate_count
+        if stop_sequences is not None:
+            self.stop_sequences = stop_sequences
+        if frequency_penalty is not None:
+            self.frequency_penalty = frequency_penalty
+        if presence_penalty is not None:
+            self.presence_penalty = presence_penalty
+        if seed is not None:
+            self.seed = seed
 
     @classmethod
     def get_config(cls):
@@ -722,20 +738,23 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
 
         and what it means
         """
-        return {
-            "FINISH_REASON_UNSPECIFIED": "stop",  # openai doesn't have a way of representing this
-            "STOP": "stop",
-            "MAX_TOKENS": "length",
-            "SAFETY": "content_filter",
-            "RECITATION": "content_filter",
-            "LANGUAGE": "content_filter",
-            "OTHER": "content_filter",
-            "BLOCKLIST": "content_filter",
-            "PROHIBITED_CONTENT": "content_filter",
-            "SPII": "content_filter",
-            "MALFORMED_FUNCTION_CALL": "stop",  # openai doesn't have a way of representing this
-            "IMAGE_SAFETY": "content_filter",
-        }
+        # Use a static variable to avoid recreating the mapping each call
+        if not hasattr(VertexGeminiConfig.get_finish_reason_mapping, "_mapping"):
+            VertexGeminiConfig.get_finish_reason_mapping._mapping = {
+                "FINISH_REASON_UNSPECIFIED": "stop",  # openai doesn't have a way of representing this
+                "STOP": "stop",
+                "MAX_TOKENS": "length",
+                "SAFETY": "content_filter",
+                "RECITATION": "content_filter",
+                "LANGUAGE": "content_filter",
+                "OTHER": "content_filter",
+                "BLOCKLIST": "content_filter",
+                "PROHIBITED_CONTENT": "content_filter",
+                "SPII": "content_filter",
+                "MALFORMED_FUNCTION_CALL": "stop",
+                "IMAGE_SAFETY": "content_filter",
+            }
+        return VertexGeminiConfig.get_finish_reason_mapping._mapping
 
     def translate_exception_str(self, exception_string: str):
         if (
@@ -1068,19 +1087,17 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         chat_completion_message: Optional[ChatCompletionResponseMessage],
         finish_reason: Optional[str],
     ) -> OpenAIChatCompletionFinishReason:
-        mapped_finish_reason = VertexGeminiConfig.get_finish_reason_mapping()
-        if chat_completion_message and chat_completion_message.get("function_call"):
-            return "function_call"
-        elif chat_completion_message and chat_completion_message.get("tool_calls"):
-            return "tool_calls"
-        elif (
-            finish_reason and finish_reason in mapped_finish_reason.keys()
-        ):  # vertex ai
-
-            return mapped_finish_reason[finish_reason]
-        else:
-
-            return "stop"
+        # Optimized to minimize repeated lookup and unnecessary branching
+        if chat_completion_message:
+            if chat_completion_message.get("function_call"):
+                return "function_call"
+            if chat_completion_message.get("tool_calls"):
+                return "tool_calls"
+        if finish_reason:
+            mapping = VertexGeminiConfig.get_finish_reason_mapping()
+            if finish_reason in mapping:
+                return mapping[finish_reason]
+        return "stop"
 
     @staticmethod
     def _calculate_web_search_requests(grounding_metadata: List[dict]) -> Optional[int]:
