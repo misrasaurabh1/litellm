@@ -62,7 +62,7 @@ from litellm.types.llms.vertex_ai import (
     UsageMetadata,
 )
 from litellm.types.utils import (
-    ChatCompletionAudioResponse,
+    ModelResponseStream, ChatCompletionAudioResponse,
     ChatCompletionTokenLogprob,
     ChoiceLogprobs,
     CompletionTokensDetailsWrapper,
@@ -85,6 +85,7 @@ from .transformation import (
     async_transform_request_body,
     sync_transform_request_body,
 )
+from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
@@ -450,15 +451,16 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
     def _map_thinking_param(
         thinking_param: AnthropicThinkingParam,
     ) -> GeminiThinkingConfig:
-        thinking_enabled = thinking_param.get("type") == "enabled"
-        thinking_budget = thinking_param.get("budget_tokens")
+        # Minimize attribute lookups, assume dict-like.
+        type_key = "type"
+        budget_key = "budget_tokens"
+        thinking_enabled = thinking_param.get(type_key) == "enabled"
+        thinking_budget = thinking_param.get(budget_key)
 
-        params: GeminiThinkingConfig = {}
-        if thinking_enabled and not VertexGeminiConfig._is_thinking_budget_zero(
-            thinking_budget
-        ):
+        params = {}
+        if thinking_enabled and thinking_budget != 0:
             params["includeThoughts"] = True
-        if thinking_budget is not None and isinstance(thinking_budget, int):
+        if isinstance(thinking_budget, int):
             params["thinkingBudget"] = thinking_budget
 
         return params
