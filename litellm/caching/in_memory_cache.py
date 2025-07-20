@@ -12,6 +12,8 @@ import json
 import sys
 import time
 from typing import TYPE_CHECKING, Any, List, Optional
+from litellm.caching.base_cache import BaseCache
+from litellm.constants import MAX_SIZE_PER_ITEM_IN_MEMORY_CACHE_IN_KB
 
 if TYPE_CHECKING:
     from litellm.types.caching import RedisPipelineIncrementOperation
@@ -27,23 +29,16 @@ class InMemoryCache(BaseCache):
     def __init__(
         self,
         max_size_in_memory: Optional[int] = 200,
-        default_ttl: Optional[
-            int
-        ] = 600,  # default ttl is 10 minutes. At maximum litellm rate limiting logic requires objects to be in memory for 1 minute
-        max_size_per_item: Optional[int] = 1024,  # 1MB = 1024KB
+        default_ttl: Optional[int] = 600,
+        max_size_per_item: Optional[int] = 1024,
     ):
         """
         max_size_in_memory [int]: Maximum number of items in cache. done to prevent memory leaks. Use 200 items as a default
         """
-        self.max_size_in_memory = (
-            max_size_in_memory or 200
-        )  # set an upper bound of 200 items in-memory
+        self.max_size_in_memory = max_size_in_memory or 200
         self.default_ttl = default_ttl or 600
-        self.max_size_per_item = (
-            max_size_per_item or MAX_SIZE_PER_ITEM_IN_MEMORY_CACHE_IN_KB
-        )  # 1MB = 1024KB
+        self.max_size_per_item = max_size_per_item or MAX_SIZE_PER_ITEM_IN_MEMORY_CACHE_IN_KB
 
-        # in-memory cache
         self.cache_dict: dict = {}
         self.ttl_dict: dict = {}
 
@@ -56,8 +51,7 @@ class InMemoryCache(BaseCache):
             # Fast path for common primitive types that are typically small
             if (
                 isinstance(value, (bool, int, float, str))
-                and len(str(value))
-                < self.max_size_per_item * MAX_SIZE_PER_ITEM_IN_MEMORY_CACHE_IN_KB
+                and len(str(value)) < self.max_size_per_item * MAX_SIZE_PER_ITEM_IN_MEMORY_CACHE_IN_KB
             ):  # Conservative estimate
                 return True
 
@@ -71,9 +65,7 @@ class InMemoryCache(BaseCache):
                 return size <= self.max_size_per_item
 
             # Fallback for complex types
-            if isinstance(value, BaseModel) and hasattr(
-                value, "model_dump"
-            ):  # Pydantic v2
+            if isinstance(value, BaseModel) and hasattr(value, "model_dump"):  # Pydantic v2
                 value = value.model_dump()
             elif hasattr(value, "isoformat"):  # datetime objects
                 return True  # datetime strings are always small
@@ -134,16 +126,18 @@ class InMemoryCache(BaseCache):
             return False
 
     def set_cache(self, key, value, **kwargs):
+        # Only evict when cache is full (fast path: skip len() if clearly not full)
         if len(self.cache_dict) >= self.max_size_in_memory:
-            # only evict when cache is full
             self.evict_cache()
         if not self.check_value_size(value):
             return
 
         self.cache_dict[key] = value
-        if self.allow_ttl_override(key):  # if ttl is not set, set it to default ttl
-            if "ttl" in kwargs and kwargs["ttl"] is not None:
-                self.ttl_dict[key] = time.time() + float(kwargs["ttl"])
+        if self.allow_ttl_override(key):
+            ttl = kwargs.get("ttl")
+            if ttl is not None:
+                # Only float() if input, and always add to current time
+                self.ttl_dict[key] = time.time() + float(ttl)
             else:
                 self.ttl_dict[key] = time.time() + self.default_ttl
 
@@ -227,9 +221,7 @@ class InMemoryCache(BaseCache):
     ) -> Optional[List[float]]:
         results = []
         for increment in increment_list:
-            result = await self.async_increment(
-                increment["key"], increment["increment_value"], **kwargs
-            )
+            result = await self.async_increment(increment["key"], increment["increment_value"], **kwargs)
             results.append(result)
         return results
 
