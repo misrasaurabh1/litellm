@@ -34,6 +34,11 @@ from litellm.types.utils import (
     SpecialEnums,
     StreamingChoices,
 )
+import copy
+import string
+import copy as _copy
+from collections import deque
+from litellm.types.llms.anthropic import *
 
 if TYPE_CHECKING:  # newer pattern to avoid importing pydantic objects on __init__.py
     from litellm.types.llms.openai import ChatCompletionImageObject
@@ -505,83 +510,65 @@ def unpack_defs(schema: dict, defs: dict) -> None:
     keeps memory overhead low by resolving nodes as it encounters them rather
     than materialising a fully dereferenced copy first.
     """
-
-    import copy
-    from collections import deque
-
-    # Combine the defs handed down by the caller with defs/definitions found on
-    # the current node.  Local keys shadow parent keys to match JSON-schema
-    # scoping rules.
-    root_defs: dict = {
-        **defs,
-        **schema.get("$defs", {}),
-        **schema.get("definitions", {}),
-    }
-
-    # Use iterative approach with queue to avoid recursion
-    # Each item in queue is (node, parent_container, key/index, active_defs, seen_ids)
-    queue: deque[
-        tuple[Any, Union[dict, list, None], Union[str, int, None], dict, set]
-    ] = deque([(schema, None, None, root_defs, set())])
+    # Combine top-level defs from caller and schema
+    root_defs = defs.copy()
+    root_defs.update(schema.get("$defs", {}))
+    root_defs.update(schema.get("definitions", {}))
+    queue = deque()
+    # seen per-top-level call
+    seen = set()
+    queue.append((schema, None, None, root_defs, seen))
 
     while queue:
         node, parent, key, active_defs, seen = queue.popleft()
-
-        # Avoid infinite loops on self-referential schemas
-        if id(node) in seen:
+        node_id = id(node)
+        if node_id in seen:
             continue
-        seen = seen.copy()  # Create new set for this branch
-        seen.add(id(node))
-
-        # ----------------------------- dict -----------------------------
+        # mutate the *existing* seen set rather than copying (limits per-call heap pressure)
+        seen.add(node_id)
+        # --------- dict case ---------
         if isinstance(node, dict):
-            # --- Case 1: this node *is* a reference ---
             if "$ref" in node:
                 ref_name = node["$ref"].split("/")[-1]
                 target_schema = active_defs.get(ref_name)
-                # Unknown reference – leave untouched
                 if target_schema is None:
                     continue
+                # Merge target defs for sub-walk
+                child_defs = active_defs.copy()
+                child_defs.update(target_schema.get("$defs", {}))
+                child_defs.update(target_schema.get("definitions", {}))
 
-                # Merge defs from the target to capture nested definitions
-                child_defs = {
-                    **active_defs,
-                    **target_schema.get("$defs", {}),
-                    **target_schema.get("definitions", {}),
-                }
-
-                # Replace the reference with resolved copy
-                resolved = copy.deepcopy(target_schema)
+                # Only deepcopy if actual replacement (to avoid unwanted aliasing)
+                resolved = _copy.deepcopy(target_schema)
                 if parent is not None and key is not None:
-                    if isinstance(parent, dict) and isinstance(key, str):
+                    # Insert resolved node in parent's correct slot
+                    if isinstance(parent, dict):
                         parent[key] = resolved
-                    elif isinstance(parent, list) and isinstance(key, int):
+                    elif isinstance(parent, list):
                         parent[key] = resolved
                 else:
-                    # This is the root schema itself
-                    schema.clear()
-                    schema.update(resolved)
-                    resolved = schema
-
-                # Add resolved node to queue for further processing
+                    # schema is root; update it in place
+                    node.clear()
+                    node.update(resolved)
+                    resolved = node
                 queue.append((resolved, parent, key, child_defs, seen))
                 continue
-
-            # --- Case 2: regular dict – process its values ---
-            # Update defs with any nested $defs/definitions present *here*.
-            current_defs = {
-                **active_defs,
-                **node.get("$defs", {}),
-                **node.get("definitions", {}),
-            }
-
-            # Add all dict values to queue
+            # Merge in this node's defs, if any
+            current_defs = active_defs
+            extra_defs = node.get("$defs", {})
+            if extra_defs:
+                current_defs = current_defs.copy()
+                current_defs.update(extra_defs)
+            extra_defs_2 = node.get("definitions", {})
+            if extra_defs_2:
+                if current_defs is active_defs:
+                    current_defs = current_defs.copy()
+                current_defs.update(extra_defs_2)
+            # Recurse on children
             for k, v in node.items():
                 queue.append((v, node, k, current_defs, seen))
-
-        # ---------------------------- list ------------------------------
+        # --------- list case ---------
         elif isinstance(node, list):
-            # Add all list items to queue
             for idx, item in enumerate(node):
                 queue.append((item, node, idx, active_defs, seen))
 
@@ -822,3 +809,7 @@ def set_last_user_message(
         messages.reverse()
     messages.append({"role": "user", "content": content})
     return messages
+
+_alphanum_underscore = set(string.ascii_letters + string.digits + "_")
+
+_trans_table = str.maketrans({c: "_" for c in map(chr, range(256)) if c not in _alphanum_underscore})
