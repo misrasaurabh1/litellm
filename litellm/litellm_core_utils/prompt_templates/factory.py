@@ -4,7 +4,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Optional, Tuple, cast, overload
+from typing import Union, Any, List, Optional, Tuple, cast, overload
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -37,6 +37,7 @@ from litellm.types.utils import GenericImageParsingChunk
 
 from .common_utils import convert_content_list_to_str, is_non_content_values_set
 from .image_handling import convert_url_to_base64
+from litellm.types.llms.cohere import CallObject, ChatHistory, ChatHistoryChatBot, ChatHistorySystem, ChatHistoryToolResult, ChatHistoryUser, ToolCallObject, ToolResultObject
 
 
 def default_pt(messages):
@@ -1846,83 +1847,55 @@ def convert_openai_message_to_cohere_tool_result(
             "content": {"location": "San Francisco, CA", "unit": "fahrenheit", "temperature": "72"},
     },
     """
-    """
-    OpenAI message with a function call looks like:
-    {
-        "role": "function",
-        "name": "get_current_weather",
-        "content": "function result goes here",
-    }
-    """
-
-    """
-    Cohere tool_results look like:
-    {
-       "call": {
-           "name": "query_daily_sales_report",
-           "parameters": {
-               "day": "2023-09-29"
-           },
-       },
-       "outputs": [
-           {
-               "date": "2023-09-29",
-               "summary": "Total Sales Amount: 10000, Total Units Sold: 250"
-           }
-       ]
-   },
-    """
-
+    content_val = message.get("content", "")
     content_str: str = ""
-    if isinstance(message["content"], str):
-        content_str = message["content"]
-    elif isinstance(message["content"], List):
-        content_list = message["content"]
-        for content in content_list:
-            if content["type"] == "text":
-                content_str += content["text"]
-    if len(content_str) > 0:
+    # Fast-path: string or list of {'type': 'text', 'text': ...}
+    if isinstance(content_val, str):
+        content_str = content_val
+    elif isinstance(content_val, list):
+        # Usually a short list. Concatenate 'text' fields where type is text.
+        content_str = "".join(
+            c.get("text", "") for c in content_val if c.get("type") == "text"
+        )
+    if content_str:
         try:
             content = json.loads(content_str)
         except json.JSONDecodeError:
             content = {"result": content_str}
     else:
         content = {}
+
     name = ""
     arguments = {}
-    # Recover name from last message with tool calls
-    if len(tool_calls) > 0:
-        tools = tool_calls
-        msg_tool_call_id = message.get("tool_call_id", None)
-        for tool in tools:
-            prev_tool_call_id = tool.get("id", None)
-            if (
-                msg_tool_call_id
-                and prev_tool_call_id
-                and msg_tool_call_id == prev_tool_call_id
-            ):
-                name = tool.get("function", {}).get("name", "")
-                arguments_str = tool.get("function", {}).get("arguments", "")
-                if arguments_str is not None and len(arguments_str) > 0:
-                    arguments = json.loads(arguments_str)
+    # Find tool name/arguments from matching tool_call_id in tool_calls
+    msg_tool_call_id = message.get("tool_call_id")
+    if tool_calls and msg_tool_call_id:
+        for tool in tool_calls:
+            if msg_tool_call_id == tool.get("id"):
+                fn_info = tool.get("function", {})
+                name = fn_info.get("name", "")
+                arguments_str = fn_info.get("arguments")
+                if arguments_str:
+                    # JSON parse only if not empty (avoid unnecessary exception)
+                    try:
+                        arguments = json.loads(arguments_str)
+                    except Exception:
+                        arguments = {}
+                break
 
-    if message["role"] == "function":
-        function_message: ChatCompletionFunctionMessage = message
-        name = function_message["name"]
-        cohere_tool_result: ToolResultObject = {
+    if message.get("role") == "function":
+        # function message, get name from message directly
+        name = message.get("name", name or "")
+        return {
             "call": CallObject(name=name, parameters=arguments),
             "outputs": [content],
         }
-        return cohere_tool_result
     else:
-        # We can't determine from openai message format whether it's a successful or
-        # error call result so default to the successful result template
-
-        cohere_tool_result = {
+        # Default output for other types (e.g. tool)
+        return {
             "call": CallObject(name=name, parameters=arguments),
             "outputs": [content],
         }
-        return cohere_tool_result
 
 
 def get_all_tool_calls(messages: List) -> List:
@@ -1931,13 +1904,13 @@ def get_all_tool_calls(messages: List) -> List:
 
     Done to handle openai no longer returning tool call 'name' in tool results.
     """
-    tool_calls: List = []
-    for m in messages:
-        if m.get("tool_calls", None) is not None:
-            if isinstance(m["tool_calls"], list):
-                tool_calls.extend(m["tool_calls"])
-
-    return tool_calls
+    # Fast-path: flatten all present lists
+    return [
+        tool
+        for m in messages
+        if m.get("tool_calls") and isinstance(m["tool_calls"], list)
+        for tool in m["tool_calls"]
+    ]
 
 
 def convert_to_cohere_tool_invoke(tool_calls: list) -> List[ToolCallObject]:
@@ -1952,37 +1925,40 @@ def convert_to_cohere_tool_invoke(tool_calls: list) -> List[ToolCallObject]:
           "type": "function",
           "function": {
             "name": "get_current_weather",
-            "arguments": "{\n\"location\": \"Boston, MA\"\n}"
+            "arguments": "{
+"location": "Boston, MA"
+}"
           }
         }
       ]
     },
     """
+    # Inline get_attribute_or_key since it's a simple getattr/get fallback
+    def attork(obj, att, default=None):
+        if hasattr(obj, att):
+            return getattr(obj, att)
+        return obj.get(att, default)
 
-    """
-    Cohere tool invokes:
-    {
-      "role": "CHATBOT",
-      "tool_calls": [{"name": "get_weather", "parameters": {"location": "San Francisco, CA"}}]
-    }
-    """
-
-    cohere_tool_invoke: List[ToolCallObject] = [
-        {
-            "name": get_attribute_or_key(
-                get_attribute_or_key(tool, "function"), "name"
-            ),
-            "parameters": json.loads(
-                get_attribute_or_key(
-                    get_attribute_or_key(tool, "function"), "arguments"
-                )
-            ),
-        }
-        for tool in tool_calls
-        if get_attribute_or_key(tool, "type") == "function"
-    ]
-
-    return cohere_tool_invoke
+    # Single listcomp for fast creation, function and argument always available
+    result = []
+    for tool in tool_calls:
+        if attork(tool, "type") == "function":
+            fn = attork(tool, "function")
+            name = attork(fn, "name")
+            args_str = attork(fn, "arguments")
+            # Only parse, skip empty/None
+            if args_str:
+                try:
+                    params = json.loads(args_str)
+                except Exception:
+                    params = {}
+            else:
+                params = {}
+            result.append({
+                "name": name,
+                "parameters": params,
+            })
+    return result
 
 
 def cohere_messages_pt_v2(  # noqa: PLR0915
@@ -2003,96 +1979,102 @@ def cohere_messages_pt_v2(  # noqa: PLR0915
     - message must be at least 1 token long or tool results must be specified.
     - cannot specify tool_results if the last entry in chat history contains a user message
     """
-    tool_calls: List = get_all_tool_calls(messages=messages)
-
-    ## GET MOST RECENT MESSAGE
-    most_recent_message = messages.pop(-1)
+    tool_calls = get_all_tool_calls(messages)
+    # Pop (not copy) for fast removal
+    most_recent_message = messages.pop()
     returned_message: Union[ToolResultObject, str] = ""
-    if (
-        most_recent_message.get("role", "") is not None
-        and most_recent_message["role"] == "tool"
-    ):
+
+    mrole = most_recent_message.get("role", None)
+    if mrole == "tool":
         # tool result
         returned_message = convert_openai_message_to_cohere_tool_result(
             most_recent_message, tool_calls
         )
     else:
-        content: Union[str, List] = most_recent_message.get("content")
+        content = most_recent_message.get("content", "")
         if isinstance(content, str):
             returned_message = content
+        elif isinstance(content, list):
+            # Merge all text chunks together
+            returned_message = "".join(
+                c.get("text", "") for c in content if c.get("type", "") == "text"
+            )
         else:
-            for chunk in content:
-                if chunk.get("type") == "text":
-                    returned_message += chunk.get("text")
+            returned_message = ""
 
-    ## CREATE CHAT HISTORY
     user_message_types = {"user"}
     tool_message_types = {"tool", "function"}
-    # reformat messages to ensure user/assistant are alternating, if there's either 2 consecutive 'user' messages or 2 consecutive 'assistant' message, merge them.
     new_messages: ChatHistory = []
     msg_i = 0
+    mlen = len(messages)
 
-    while msg_i < len(messages):
+    while msg_i < mlen:
         user_content: str = ""
         init_msg_i = msg_i
-        ## MERGE CONSECUTIVE USER CONTENT ##
-        while msg_i < len(messages) and messages[msg_i]["role"] in user_message_types:
-            if isinstance(messages[msg_i]["content"], list):
-                for m in messages[msg_i]["content"]:
-                    if m.get("type", "") == "text":
-                        user_content += m["text"]
-            else:
-                user_content += messages[msg_i]["content"]
-            msg_i += 1
 
-        if len(user_content) > 0:
+        ## MERGE CONSECUTIVE USER CONTENT ##
+        while msg_i < mlen and messages[msg_i].get("role") in user_message_types:
+            msg_content = messages[msg_i].get("content", "")
+            if isinstance(msg_content, list):
+                user_content += "".join(
+                    m.get("text", "")
+                    for m in msg_content
+                    if m.get("type", "") == "text"
+                )
+            else:
+                user_content += msg_content
+            msg_i += 1
+        if user_content:
             new_messages.append(ChatHistoryUser(role="USER", message=user_content))
 
         system_content: str = ""
         ## MERGE CONSECUTIVE SYSTEM CONTENT ##
-        while msg_i < len(messages) and messages[msg_i]["role"] == "system":
-            if isinstance(messages[msg_i]["content"], list):
-                for m in messages[msg_i]["content"]:
-                    if m.get("type", "") == "text":
-                        system_content += m["text"]
+        while msg_i < mlen and messages[msg_i].get("role") == "system":
+            msg_content = messages[msg_i].get("content", "")
+            if isinstance(msg_content, list):
+                system_content += "".join(
+                    m.get("text", "")
+                    for m in msg_content
+                    if m.get("type", "") == "text"
+                )
             else:
-                system_content += messages[msg_i]["content"]
+                system_content += msg_content
             msg_i += 1
-
-        if len(system_content) > 0:
-            new_messages.append(
-                ChatHistorySystem(role="SYSTEM", message=system_content)
-            )
+        if system_content:
+            new_messages.append(ChatHistorySystem(role="SYSTEM", message=system_content))
 
         assistant_content: str = ""
         assistant_tool_calls: List[ToolCallObject] = []
+
         ## MERGE CONSECUTIVE ASSISTANT CONTENT ##
-        while msg_i < len(messages) and messages[msg_i]["role"] == "assistant":
-            if messages[msg_i].get("content", None) is not None and isinstance(
-                messages[msg_i]["content"], list
-            ):
-                for m in messages[msg_i]["content"]:
-                    if m.get("type", "") == "text":
-                        assistant_content += m["text"]
-            elif messages[msg_i].get("content") is not None and isinstance(
-                messages[msg_i]["content"], str
-            ):
-                assistant_content += messages[msg_i]["content"]
-            if messages[msg_i].get(
-                "tool_calls", []
-            ):  # support assistant tool invoke conversion
-                assistant_tool_calls.extend(
-                    convert_to_cohere_tool_invoke(messages[msg_i]["tool_calls"])
+        while msg_i < mlen and messages[msg_i].get("role") == "assistant":
+            msg_content = messages[msg_i].get("content", None)
+            # Merge string and/or chunked text
+            if isinstance(msg_content, list):
+                assistant_content += "".join(
+                    m.get("text", "")
+                    for m in msg_content
+                    if m.get("type", "") == "text"
                 )
+            elif isinstance(msg_content, str):
+                assistant_content += msg_content
 
-            if messages[msg_i].get("function_call"):
+            # Merge tool_calls if present
+            tool_calls_this = messages[msg_i].get("tool_calls", [])
+            if tool_calls_this:
                 assistant_tool_calls.extend(
-                    convert_to_cohere_tool_invoke(messages[msg_i]["function_call"])
+                    convert_to_cohere_tool_invoke(tool_calls_this)
                 )
-
+            # Merge function_call if present
+            function_call = messages[msg_i].get("function_call")
+            if function_call:
+                # function_call can be dict or list
+                fc_items = function_call if isinstance(function_call, list) else [function_call]
+                assistant_tool_calls.extend(
+                    convert_to_cohere_tool_invoke(fc_items)
+                )
             msg_i += 1
-
-        if len(assistant_content) > 0:
+        if assistant_content:
             new_messages.append(
                 ChatHistoryChatBot(
                     role="CHATBOT",
@@ -2101,29 +2083,27 @@ def cohere_messages_pt_v2(  # noqa: PLR0915
                 )
             )
 
-        ## MERGE CONSECUTIVE TOOL RESULTS
+        ## MERGE CONSECUTIVE TOOL RESULTS ##
         tool_results: List[ToolResultObject] = []
-        while msg_i < len(messages) and messages[msg_i]["role"] in tool_message_types:
+        while msg_i < mlen and messages[msg_i].get("role") in tool_message_types:
             tool_results.append(
                 convert_openai_message_to_cohere_tool_result(
                     messages[msg_i], tool_calls
                 )
             )
-
             msg_i += 1
-
-        if len(tool_results) > 0:
+        if tool_results:
             new_messages.append(
                 ChatHistoryToolResult(role="TOOL", tool_results=tool_results)
             )
 
-        if msg_i == init_msg_i:  # prevent infinite loops
+        if msg_i == init_msg_i:
+            # No progress: input data broken (defensive)
             raise litellm.BadRequestError(
                 message=BAD_MESSAGE_ERROR_STR + f"passed in {messages[msg_i]}",
                 model=model,
                 llm_provider=llm_provider,
             )
-
     return returned_message, new_messages
 
 
